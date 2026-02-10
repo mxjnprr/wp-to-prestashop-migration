@@ -450,3 +450,63 @@ class PrestaShopClient:
             logger.error(f"PS: failed to list products: {e}")
             return []
 
+    def list_cms_categories(self) -> list[dict]:
+        """
+        Discover CMS categories by scanning existing CMS pages.
+        PS webservice doesn't expose CMS categories as a separate resource,
+        so we extract unique id_cms_category values from CMS pages.
+        """
+        # Step 1: Get all CMS page IDs
+        url = f"{self.api_base}/content_management_system"
+        try:
+            resp = self.session.get(url, params={"output_format": "JSON"}, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, list):
+                return []
+            cms_list = data.get("content_management_system", [])
+            if isinstance(cms_list, dict):
+                cms_list = [cms_list]
+            page_ids = [p["id"] for p in cms_list if "id" in p]
+        except Exception as e:
+            logger.error(f"PS: failed to list CMS pages for category discovery: {e}")
+            return []
+
+        # Step 2: Read each page to get id_cms_category
+        discovered = {}  # {cat_id: first_page_title}
+        for pid in page_ids[:50]:  # Limit to 50 pages for speed
+            try:
+                resp = self.session.get(
+                    f"{self.api_base}/content_management_system/{pid}",
+                    params={"output_format": "JSON"},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                pdata = resp.json()
+                content = pdata.get("content", {})
+                cat_id = int(content.get("id_cms_category", 1))
+                if cat_id not in discovered:
+                    # Use meta_title as a hint for the category
+                    discovered[cat_id] = cat_id
+            except Exception:
+                continue
+
+        # Step 3: Build result with category names
+        # PS stores CMS category names in ps_cms_category_lang table,
+        # but since we can't query it, provide category IDs as names.
+        # The user can add custom names in config if needed.
+        cat_names = {
+            1: "Accueil",  # Default PS CMS category
+        }
+        result = []
+        for cat_id in sorted(discovered.keys()):
+            name = cat_names.get(cat_id, f"Catégorie {cat_id}")
+            result.append({"id": cat_id, "name": name})
+
+        # Ensure category 1 is always present
+        if 1 not in discovered:
+            result.insert(0, {"id": 1, "name": cat_names.get(1, "Accueil")})
+
+        logger.info(f"PS: discovered {len(result)} CMS categories")
+        return result
+

@@ -512,6 +512,16 @@ class GUIHandler(BaseHTTPRequestHandler):
                 "log": STATE.migration_log[-50:],
                 "running": STATE.migration_running,
             })
+        elif path == "/api/ps/cms-categories":
+            # Serve CMS categories from config (stored in prestashop.cms_categories)
+            raw_cats = STATE.config.get("prestashop", {}).get("cms_categories", {})
+            if raw_cats and isinstance(raw_cats, dict):
+                cats = [{"id": int(k), "name": v} for k, v in raw_cats.items()]
+                cats.sort(key=lambda c: c["id"])
+            else:
+                # Default fallback
+                cats = [{"id": 1, "name": "Accueil"}]
+            self._send_json({"categories": cats})
         else:
             self.send_error(404)
 

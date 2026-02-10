@@ -482,8 +482,8 @@ body::before {
                     <input type="number" id="cfg-ps-lang" value="1" min="1" />
                 </div>
                 <div class="form-group">
-                    <label>Catégorie CMS (ID)</label>
-                    <input type="number" id="cfg-ps-cat" value="1" min="1" />
+                    <label>Catégorie CMS par défaut</label>
+                    <select id="cfg-ps-cat"><option value="1">1 — Chargement...</option></select>
                 </div>
             </div>
         </div>
@@ -699,6 +699,22 @@ function toast(msg, type = 'info') {
     setTimeout(() => el.remove(), 4000);
 }
 
+// ── CMS Categories cache ─────────────────────────────────────
+let cmsCats = [];  // [{id, name}, ...]
+async function loadCmsCategories() {
+    try {
+        const data = await api('GET', '/api/ps/cms-categories');
+        cmsCats = (data.categories || []).sort((a, b) => a.id - b.id);
+    } catch (e) { cmsCats = []; }
+    return cmsCats;
+}
+function cmsCatOptions(selectedId) {
+    if (!cmsCats.length) return `<option value="1">1 — (catégories non chargées)</option>`;
+    return cmsCats.map(c =>
+        `<option value="${c.id}" ${c.id == selectedId ? 'selected' : ''}>${c.id} — ${c.name}</option>`
+    ).join('');
+}
+
 // ── Tabs ─────────────────────────────────────────────────────
 function switchTab(name) {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -725,7 +741,10 @@ async function loadConfig() {
         document.getElementById('cfg-ps-url').value = cfg.prestashop.url || '';
         document.getElementById('cfg-ps-key').value = cfg.prestashop.api_key || '';
         document.getElementById('cfg-ps-lang').value = cfg.prestashop.default_lang_id || 1;
-        document.getElementById('cfg-ps-cat').value = cfg.prestashop.cms_category_id || 1;
+        // Load CMS categories then set dropdown
+        await loadCmsCategories();
+        const catSel = document.getElementById('cfg-ps-cat');
+        catSel.innerHTML = cmsCatOptions(cfg.prestashop.cms_category_id || 1);
     }
     if (cfg.migration) {
         document.getElementById('cfg-dry-run').checked = cfg.migration.dry_run !== false;
@@ -921,8 +940,8 @@ function openBulkModal(target, slugs) {
                 Choisissez la catégorie CMS de destination dans PrestaShop.
             </p>
             <div class="detail-edit-row">
-                <label>Catégorie CMS (ID)</label>
-                <input type="number" id="modal-cms-cat" value="1" min="1" placeholder="ID catégorie" />
+                <label>Catégorie CMS</label>
+                <select id="modal-cms-cat">${cmsCatOptions(1)}</select>
             </div>
         `;
     } else if (target === 'product') {
@@ -1030,8 +1049,7 @@ function showDetail(slug) {
         editHtml += `
             <div class="detail-edit-row">
                 <label>Catégorie CMS</label>
-                <input type="number" id="detail-cms-cat" value="${opts.cms_category_id || ''}" min="1"
-                    placeholder="ID (défaut: config)" />
+                <select id="detail-cms-cat">${cmsCatOptions(opts.cms_category_id || 1)}</select>
             </div>
         `;
     } else if (p.target === 'product') {
