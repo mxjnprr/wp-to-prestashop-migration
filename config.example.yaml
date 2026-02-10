@@ -1,0 +1,46 @@
+# =============================================================================
+# WordPress → PrestaShop Migration Tool — Configuration
+# =============================================================================
+# Copy this file to config.yaml and fill in your actual values.
+
+wordpress:
+  # Base URL of your WordPress site (no trailing slash)
+  url: "https://www.example-wordpress.com"
+  
+  # Authentication (optional — only needed if REST API is restricted)
+  # For Application Passwords: username + app password
+  # Leave empty for public sites
+  username: ""
+  app_password: ""
+
+prestashop:
+  # Base URL of your PrestaShop shop (no trailing slash)
+  url: "https://www.example-prestashop.com"
+  
+  # Webservice API key (generate in Back Office > Advanced Parameters > Webservice)
+  api_key: "YOUR_PRESTASHOP_API_KEY"
+  
+  # Default language ID in PrestaShop (1 = first language installed, usually French)
+  default_lang_id: 1
+  
+  # Target CMS category ID where pages will be created
+  # 1 = "Home" category (root). Create a dedicated category in BO if desired.
+  cms_category_id: 1
+
+migration:
+  # Dry-run mode: if true, no changes will be made to PrestaShop
+  # Pages will be fetched from WP and logged, but not pushed
+  dry_run: false
+  
+  # Log file path (relative to project root)
+  log_file: "migration.log"
+  
+  # Download and re-upload images found in page content
+  download_images: true
+  
+  # Local temp directory for downloaded images
+  image_temp_dir: "temp_images"
+  
+  # If PrestaShop is on the same server, direct path to /img/cms/
+  # Leave empty to upload via API or skip image upload
+  image_target_dir: ""
