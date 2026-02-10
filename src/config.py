@@ -65,28 +65,23 @@ class AppConfig:
 def load_config(config_path: str) -> AppConfig:
     """Load and validate configuration from a YAML file."""
     if not os.path.exists(config_path):
-        print(f"❌ Configuration file not found: {config_path}")
-        print("   Copy config.example.yaml to config.yaml and fill in your values.")
-        sys.exit(1)
+        raise ValueError(f"Fichier de configuration introuvable : {config_path}")
 
     with open(config_path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
     if not raw:
-        print("❌ Configuration file is empty.")
-        sys.exit(1)
+        raise ValueError("Le fichier de configuration est vide.")
 
     # Validate required sections
     for section in ["wordpress", "prestashop"]:
         if section not in raw:
-            print(f"❌ Missing required section '{section}' in config.")
-            sys.exit(1)
+            raise ValueError(f"Section '{section}' manquante dans la configuration.")
 
     # Build WordPress config
     wp_raw = raw["wordpress"]
     if not wp_raw.get("url"):
-        print("❌ wordpress.url is required.")
-        sys.exit(1)
+        raise ValueError("wordpress.url est requis — configurez l'URL WordPress.")
     wp_config = WordPressConfig(
         url=wp_raw["url"],
         username=wp_raw.get("username", ""),
@@ -96,11 +91,9 @@ def load_config(config_path: str) -> AppConfig:
     # Build PrestaShop config
     ps_raw = raw["prestashop"]
     if not ps_raw.get("url"):
-        print("❌ prestashop.url is required.")
-        sys.exit(1)
+        raise ValueError("prestashop.url est requis — configurez l'URL PrestaShop.")
     if not ps_raw.get("api_key"):
-        print("❌ prestashop.api_key is required.")
-        sys.exit(1)
+        raise ValueError("prestashop.api_key est requis — configurez la clé API PrestaShop.")
     ps_config = PrestaShopConfig(
         url=ps_raw["url"],
         api_key=ps_raw["api_key"],

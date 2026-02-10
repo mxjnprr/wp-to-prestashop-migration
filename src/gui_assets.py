@@ -1107,7 +1107,13 @@ async function startMigration(dryRun) {
     document.getElementById('btn-live').disabled = true;
 
     const result = await api('POST', '/api/migrate', { dry_run: dryRun });
-    if (result.error) { toast(result.error, 'error'); return; }
+    if (result.error) {
+        toast(result.error, 'error');
+        document.getElementById('btn-dry').disabled = false;
+        document.getElementById('btn-live').disabled = false;
+        document.getElementById('mig-progress-card').style.display = 'none';
+        return;
+    }
 
     toast(dryRun ? '🔍 Dry run lancé' : '🚀 Migration lancée', 'info');
     pollMigrationStatus();

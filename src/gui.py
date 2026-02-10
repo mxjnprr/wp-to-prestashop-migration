@@ -440,6 +440,14 @@ class GUIHandler(BaseHTTPRequestHandler):
             ps_url = body.get("ps_url") or STATE.config.get("prestashop", {}).get("url", "")
             ps_key = body.get("ps_key") or STATE.config.get("prestashop", {}).get("api_key", "")
 
+            # Save URLs into config so they persist
+            if wp_url:
+                STATE.config.setdefault("wordpress", {})["url"] = wp_url
+            if ps_url:
+                STATE.config.setdefault("prestashop", {})["url"] = ps_url
+            if ps_key:
+                STATE.config.setdefault("prestashop", {})["api_key"] = ps_key
+
             if wp_url:
                 try:
                     r = requests.get(wp_url.rstrip("/") + "/wp-json/wp/v2/pages?per_page=1", timeout=10)
@@ -447,6 +455,8 @@ class GUIHandler(BaseHTTPRequestHandler):
                     result["wordpress"] = True
                 except Exception as e:
                     result["wp_error"] = str(e)
+            else:
+                result["wp_error"] = "URL WordPress non configurée"
 
             if ps_url and ps_key:
                 try:
@@ -459,7 +469,12 @@ class GUIHandler(BaseHTTPRequestHandler):
                         result["ps_error"] = f"HTTP {r.status_code}"
                 except Exception as e:
                     result["ps_error"] = str(e)
+            elif not ps_url:
+                result["ps_error"] = "URL PrestaShop non configurée"
+            elif not ps_key:
+                result["ps_error"] = "Clé API PrestaShop non configurée"
 
+            STATE.save_config()
             self._send_json(result)
 
         elif path == "/api/scan":
@@ -545,8 +560,27 @@ class GUIHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/migrate":
             if STATE.migration_running:
-                self._send_json({"error": "Migration already running"}, 409)
+                self._send_json({"error": "Migration déjà en cours"}, 409)
                 return
+
+            # Validate config before starting
+            wp_url = STATE.config.get("wordpress", {}).get("url", "")
+            ps_url = STATE.config.get("prestashop", {}).get("url", "")
+            ps_key = STATE.config.get("prestashop", {}).get("api_key", "")
+
+            if not wp_url:
+                self._send_json({"error": "❌ URL WordPress non configurée. Allez dans l'onglet Configuration."}, 400)
+                return
+            if not ps_url:
+                self._send_json({"error": "❌ URL PrestaShop non configurée. Allez dans l'onglet Configuration."}, 400)
+                return
+            if not ps_key:
+                self._send_json({"error": "❌ Clé API PrestaShop non configurée. Allez dans l'onglet Configuration."}, 400)
+                return
+            if not STATE.analyzed:
+                self._send_json({"error": "❌ Aucune page scannée. Lancez d'abord un scan dans l'onglet Scanner."}, 400)
+                return
+
             dry_run = body.get("dry_run", True)
             STATE.save_config()
             thread = threading.Thread(target=run_migration_thread, args=(dry_run,), daemon=True)
