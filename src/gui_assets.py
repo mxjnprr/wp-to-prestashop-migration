@@ -504,8 +504,26 @@ body::before {
                     </label>
                 </div>
                 <div class="form-group">
-                    <label>Répertoire images cible</label>
+                    <label>Répertoire images cible (local)</label>
                     <input type="text" id="cfg-img-dir" placeholder="/var/www/prestashop/img/cms/" />
+                </div>
+
+                <h3 style="margin-top:20px; color:var(--primary)">📡 Upload FTP des images</h3>
+                <div class="form-group">
+                    <label>Hôte FTP</label>
+                    <input type="text" id="cfg-ftp-host" placeholder="shop.korteldesign.com" />
+                </div>
+                <div class="form-group">
+                    <label>Utilisateur FTP</label>
+                    <input type="text" id="cfg-ftp-user" placeholder="user@domain.com" />
+                </div>
+                <div class="form-group">
+                    <label>Mot de passe FTP</label>
+                    <input type="password" id="cfg-ftp-pass" />
+                </div>
+                <div class="form-group">
+                    <label>Chemin distant</label>
+                    <input type="text" id="cfg-ftp-path" value="/img/cms" placeholder="/img/cms" />
                 </div>
             </div>
         </div>
@@ -713,6 +731,10 @@ async function loadConfig() {
         document.getElementById('cfg-dry-run').checked = cfg.migration.dry_run !== false;
         document.getElementById('cfg-images').checked = cfg.migration.download_images !== false;
         document.getElementById('cfg-img-dir').value = cfg.migration.image_target_dir || '';
+        document.getElementById('cfg-ftp-host').value = cfg.migration.ftp_host || '';
+        document.getElementById('cfg-ftp-user').value = cfg.migration.ftp_user || '';
+        document.getElementById('cfg-ftp-pass').value = cfg.migration.ftp_password || '';
+        document.getElementById('cfg-ftp-path').value = cfg.migration.ftp_remote_path || '/img/cms';
     }
 }
 
@@ -733,6 +755,10 @@ async function saveConfig() {
             dry_run: document.getElementById('cfg-dry-run').checked,
             download_images: document.getElementById('cfg-images').checked,
             image_target_dir: document.getElementById('cfg-img-dir').value,
+            ftp_host: document.getElementById('cfg-ftp-host').value,
+            ftp_user: document.getElementById('cfg-ftp-user').value,
+            ftp_password: document.getElementById('cfg-ftp-pass').value,
+            ftp_remote_path: document.getElementById('cfg-ftp-path').value,
             log_file: 'migration.log',
         }
     };

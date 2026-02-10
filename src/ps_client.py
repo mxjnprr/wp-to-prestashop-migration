@@ -93,6 +93,26 @@ class PrestaShopClient:
             logger.error(f"PS: failed to get CMS schema: {e}")
             return None
 
+    @staticmethod
+    def _sanitize_meta(text: str, max_len: int = 512) -> str:
+        """Sanitize meta fields for PrestaShop: strip HTML, decode entities, limit length."""
+        import html
+        import re
+        if not text:
+            return ""
+        # Strip HTML tags
+        text = re.sub(r'<[^>]+>', '', text)
+        # Decode HTML entities (&#8230; → …, &rsquo; → ', etc.)
+        text = html.unescape(text)
+        # Remove control characters except newlines
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+        # Collapse whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        # Truncate
+        if len(text) > max_len:
+            text = text[:max_len - 1] + "…"
+        return text
+
     def _build_cms_xml(
         self,
         page_data: dict[str, Any],
@@ -125,10 +145,10 @@ class PrestaShopClient:
         index_elem = ET.SubElement(cms, "indexation")
         index_elem.text = "1"
 
-        # Multi-language fields
+        # Multi-language fields — sanitize meta fields to avoid PS validation errors
         lang_fields = {
-            "meta_title": page_data.get("meta_title", ""),
-            "meta_description": page_data.get("meta_description", ""),
+            "meta_title": self._sanitize_meta(page_data.get("meta_title", ""), 128),
+            "meta_description": self._sanitize_meta(page_data.get("meta_description", ""), 512),
             "meta_keywords": "",
             "content": page_data.get("content", ""),
             "link_rewrite": page_data.get("slug", ""),

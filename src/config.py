@@ -45,6 +45,11 @@ class MigrationConfig:
     download_images: bool = True
     image_temp_dir: str = "temp_images"
     image_target_dir: str = ""
+    # FTP for uploading images to PrestaShop /img/cms/
+    ftp_host: str = ""
+    ftp_user: str = ""
+    ftp_password: str = ""
+    ftp_remote_path: str = "/img/cms"
 
 
 @dataclass
@@ -109,6 +114,10 @@ def load_config(config_path: str) -> AppConfig:
         download_images=mig_raw.get("download_images", True),
         image_temp_dir=mig_raw.get("image_temp_dir", "temp_images"),
         image_target_dir=mig_raw.get("image_target_dir", ""),
+        ftp_host=mig_raw.get("ftp_host", ""),
+        ftp_user=mig_raw.get("ftp_user", ""),
+        ftp_password=mig_raw.get("ftp_password", ""),
+        ftp_remote_path=mig_raw.get("ftp_remote_path", "/img/cms"),
     )
 
     # Build Mapping config

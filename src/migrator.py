@@ -245,9 +245,46 @@ class Migrator:
             logger.error(f"  ❌ Product update failed: {title}")
 
     def _handle_images(self, images: list[dict[str, str]]) -> None:
-        """Download images from WordPress and place them for PrestaShop."""
+        """Download images from WordPress and upload them to PrestaShop via FTP."""
         target_dir = self.config.migration.image_target_dir
         temp_dir = self.config.migration.image_temp_dir
+        ftp_host = self.config.migration.ftp_host
+        ftp_user = self.config.migration.ftp_user
+        ftp_pass = self.config.migration.ftp_password
+        ftp_remote = self.config.migration.ftp_remote_path
+
+        # Open FTP connection if configured
+        ftp = None
+        if ftp_host and ftp_user:
+            try:
+                import ftplib
+                ftp = ftplib.FTP_TLS(ftp_host)
+                ftp.login(ftp_user, ftp_pass)
+                ftp.prot_p()  # Secure data connection
+                # Navigate to remote dir, create if needed
+                try:
+                    ftp.cwd(ftp_remote)
+                except ftplib.error_perm:
+                    # Try to create the path
+                    self._ftp_mkdirs(ftp, ftp_remote)
+                    ftp.cwd(ftp_remote)
+                logger.info(f"  📡 FTP connected: {ftp_host}:{ftp_remote}")
+            except Exception as e:
+                logger.warning(f"  ⚠️ FTP connection failed: {e}")
+                # Try plain FTP (non-TLS)
+                try:
+                    import ftplib
+                    ftp = ftplib.FTP(ftp_host)
+                    ftp.login(ftp_user, ftp_pass)
+                    try:
+                        ftp.cwd(ftp_remote)
+                    except ftplib.error_perm:
+                        self._ftp_mkdirs(ftp, ftp_remote)
+                        ftp.cwd(ftp_remote)
+                    logger.info(f"  📡 FTP connected (plain): {ftp_host}:{ftp_remote}")
+                except Exception as e2:
+                    logger.warning(f"  ⚠️ FTP plain also failed: {e2}")
+                    ftp = None
 
         for img_info in images:
             original_url = img_info["original_url"]
@@ -258,18 +295,27 @@ class Migrator:
                 self.stats["images"] += 1
                 continue
 
-            # Download
+            # Download from WordPress
             image_data = self.wp.download_image(original_url)
             if not image_data:
                 logger.warning(f"    ⚠️ Could not download: {filename}")
                 continue
 
-            # Save locally (always, for reference)
+            # Save locally
             local_path = os.path.join(temp_dir, filename)
             with open(local_path, "wb") as f:
                 f.write(image_data)
 
-            # If target directory specified, copy there
+            # Upload via FTP if connected
+            if ftp:
+                try:
+                    with open(local_path, "rb") as f:
+                        ftp.storbinary(f"STOR {filename}", f)
+                    logger.info(f"    📤 FTP uploaded: {filename}")
+                except Exception as e:
+                    logger.warning(f"    ⚠️ FTP upload failed for {filename}: {e}")
+
+            # If target directory specified, copy there too
             if target_dir:
                 dest_path = os.path.join(target_dir, filename)
                 try:
@@ -278,7 +324,27 @@ class Migrator:
                     logger.info(f"    📁 Copied: {filename} → {dest_path}")
                 except (OSError, shutil.Error) as e:
                     logger.warning(f"    ⚠️ Could not copy {filename} to target: {e}")
-            else:
+            elif not ftp:
                 logger.info(f"    💾 Downloaded: {filename} (in {temp_dir}/)")
 
             self.stats["images"] += 1
+
+        # Close FTP connection
+        if ftp:
+            try:
+                ftp.quit()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _ftp_mkdirs(ftp, path: str) -> None:
+        """Recursively create remote FTP directories."""
+        import ftplib
+        dirs = path.strip("/").split("/")
+        current = ""
+        for d in dirs:
+            current += f"/{d}"
+            try:
+                ftp.cwd(current)
+            except ftplib.error_perm:
+                ftp.mkd(current)
