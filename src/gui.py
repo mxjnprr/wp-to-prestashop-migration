@@ -16,6 +16,7 @@ import threading
 import webbrowser
 from functools import partial
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -440,6 +441,12 @@ class GUIHandler(BaseHTTPRequestHandler):
             ps_url = body.get("ps_url") or STATE.config.get("prestashop", {}).get("url", "")
             ps_key = body.get("ps_key") or STATE.config.get("prestashop", {}).get("api_key", "")
 
+            # Auto-add https:// if missing
+            if wp_url and not wp_url.startswith(("http://", "https://")):
+                wp_url = "https://" + wp_url
+            if ps_url and not ps_url.startswith(("http://", "https://")):
+                ps_url = "https://" + ps_url
+
             # Save URLs into config so they persist
             if wp_url:
                 STATE.config.setdefault("wordpress", {})["url"] = wp_url
@@ -463,6 +470,7 @@ class GUIHandler(BaseHTTPRequestHandler):
                     r = requests.get(
                         ps_url.rstrip("/") + "/api/",
                         auth=(ps_key, ""), timeout=10,
+                        verify=False,
                     )
                     result["prestashop"] = r.status_code == 200
                     if not result["prestashop"]:
@@ -617,7 +625,14 @@ def main():
     STATE.config_path = args.config
     STATE.load_config(args.config)
 
-    server = HTTPServer(("0.0.0.0", args.port), GUIHandler)
+    # Suppress SSL warnings for self-signed certs
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+
+    server = _ThreadingHTTPServer(("0.0.0.0", args.port), GUIHandler)
     url = f"http://localhost:{args.port}"
 
     print(f"\n  ╔══════════════════════════════════════════════╗")
