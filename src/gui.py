@@ -432,7 +432,9 @@ def run_migration_thread(dry_run: bool):
                 elif target == "product":
                     migrator._migrate_as_product(page_data, route)
             except Exception as e:
+                import traceback
                 logger.error(f"  ❌ Erreur: {e}")
+                logger.error(f"  {traceback.format_exc()}")
                 migrator.stats["failed"] += 1
 
         # Summary

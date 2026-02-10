@@ -21,6 +21,7 @@ class PrestaShopClient:
         self.api_key = api_key
         self.default_lang_id = default_lang_id
         self.session = requests.Session()
+        self.session.verify = False  # Handle self-signed / invalid SSL certs
         # PrestaShop Webservice uses API key as username, no password
         self.session.auth = HTTPBasicAuth(api_key, "")
         self.session.headers.update({
@@ -59,6 +60,10 @@ class PrestaShopClient:
             resp = self.session.get(url, params=params, timeout=15)
             resp.raise_for_status()
             data = resp.json()
+
+            # PrestaShop may return a list (empty results) or a dict
+            if isinstance(data, list):
+                return None
             cms_pages = data.get("content_management_system", [])
 
             # PrestaShop returns different structures depending on result count
@@ -160,23 +165,34 @@ class PrestaShopClient:
             resp.raise_for_status()
 
             # Parse response to get new ID
-            root = ET.fromstring(resp.content)
-            id_elem = root.find(".//content_management_system/id")
-            if id_elem is not None and id_elem.text:
-                new_id = int(id_elem.text)
-                logger.info(f"PS: created CMS page ID {new_id}")
-                return new_id
-            else:
-                logger.warning("PS: page created but could not parse returned ID")
-                return None
+            try:
+                root = ET.fromstring(resp.content)
+                # Try multiple XPath patterns — PS structure varies by version
+                for xpath in [
+                    ".//content_management_system/id",
+                    ".//content/id",
+                    ".//cms/id",
+                    ".//id",
+                ]:
+                    id_elem = root.find(xpath)
+                    if id_elem is not None and id_elem.text:
+                        new_id = int(id_elem.text)
+                        logger.info(f"PS: created CMS page ID {new_id}")
+                        return new_id
+
+                # If HTTP was 200/201 but we couldn't find the ID, still count as success
+                logger.warning(f"PS: page likely created (HTTP {resp.status_code}) but could not parse returned ID")
+                logger.debug(f"PS: response body: {resp.text[:500]}")
+                return -1  # Sentinel: created but unknown ID
+            except ET.ParseError:
+                logger.warning(f"PS: page likely created (HTTP {resp.status_code}) but response is not XML")
+                logger.debug(f"PS: response body: {resp.text[:300]}")
+                return -1
 
         except requests.exceptions.RequestException as e:
             logger.error(f"PS: failed to create CMS page: {e}")
             if hasattr(e, "response") and e.response is not None:
                 logger.debug(f"PS: response body: {e.response.text[:500]}")
-            return None
-        except ET.ParseError as e:
-            logger.error(f"PS: failed to parse create response: {e}")
             return None
 
     def update_cms_page(
