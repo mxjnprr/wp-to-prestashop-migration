@@ -34,6 +34,7 @@ class AppState:
         self.wp_pages: list[dict] = []
         self.analyzed: list[dict] = []
         self.assignments: dict[str, str] = {}     # slug → target
+        self.page_options: dict[str, dict] = {}   # slug → {cms_category_id, product_id, product_reference, match_by}
         self.migration_log: list[str] = []
         self.migration_running: bool = False
         self.migration_progress: dict = {"current": 0, "total": 0, "status": "idle"}
@@ -53,16 +54,68 @@ class AppState:
             }
 
     def save_config(self):
-        # Merge mapping into config
+        # Group by target and options to create fine-grained rules
+        from collections import defaultdict
         rules = []
-        cms_slugs = sorted(s for s, t in self.assignments.items() if t == "cms")
-        product_slugs = sorted(s for s, t in self.assignments.items() if t == "product")
-        skip_slugs = sorted(s for s, t in self.assignments.items() if t == "skip")
 
-        if product_slugs:
-            rules.append({"name": "products", "target": "product", "match_by": "name", "slugs": product_slugs})
-        if cms_slugs:
-            rules.append({"name": "cms_pages", "target": "cms", "cms_category_id": 1, "slugs": cms_slugs})
+        # Group CMS pages by category ID
+        cms_by_cat: dict[int, list[str]] = defaultdict(list)
+        for slug, target in self.assignments.items():
+            if target == "cms":
+                opts = self.page_options.get(slug, {})
+                cat_id = opts.get("cms_category_id") or self.config.get("prestashop", {}).get("cms_category_id", 1)
+                cms_by_cat[cat_id].append(slug)
+
+        for cat_id, slugs in sorted(cms_by_cat.items()):
+            rules.append({
+                "name": f"cms_cat_{cat_id}",
+                "target": "cms",
+                "cms_category_id": cat_id,
+                "slugs": sorted(slugs),
+            })
+
+        # Group Product pages: direct ID mappings vs match-by-name/reference
+        product_map = []
+        product_by_ref = []
+        product_by_name = []
+        for slug, target in self.assignments.items():
+            if target != "product":
+                continue
+            opts = self.page_options.get(slug, {})
+            if opts.get("product_id"):
+                product_map.append({"slug": slug, "product_id": opts["product_id"]})
+            elif opts.get("product_reference"):
+                product_by_ref.append({"slug": slug, "product_reference": opts["product_reference"]})
+            else:
+                match = opts.get("match_by", "name")
+                if match == "reference":
+                    product_by_ref.append({"slug": slug})
+                else:
+                    product_by_name.append(slug)
+
+        if product_map:
+            rules.append({
+                "name": "products_by_id",
+                "target": "product",
+                "product_map": [{"slug": p["slug"], "product_id": p["product_id"]} for p in sorted(product_map, key=lambda x: x["slug"])],
+            })
+        if product_by_ref:
+            rules.append({
+                "name": "products_by_reference",
+                "target": "product",
+                "match_by": "reference",
+                "slugs": sorted(p["slug"] for p in product_by_ref),
+            })
+        if product_by_name:
+            rules.append({
+                "name": "products_by_name",
+                "target": "product",
+                "match_by": "name",
+                "slugs": sorted(product_by_name),
+            })
+
+        # Skip rules
+        skip_slugs = sorted(s for s, t in self.assignments.items() if t == "skip")
         if skip_slugs:
             rules.append({"name": "skipped", "target": "skip", "slugs": skip_slugs})
 
@@ -360,6 +413,7 @@ class GUIHandler(BaseHTTPRequestHandler):
             for p in STATE.analyzed:
                 p_copy = dict(p)
                 p_copy["target"] = STATE.assignments.get(p["slug"], "skip")
+                p_copy["options"] = STATE.page_options.get(p["slug"], {})
                 pages.append(p_copy)
             self._send_json(pages)
         elif path == "/api/migrate/status":
@@ -448,8 +502,11 @@ class GUIHandler(BaseHTTPRequestHandler):
         elif path == "/api/pages/route":
             slug = body.get("slug", "")
             target = body.get("target", "skip")
+            options = body.get("options", {})
             if slug and target in ("cms", "product", "skip"):
                 STATE.assignments[slug] = target
+                if options:
+                    STATE.page_options[slug] = {**STATE.page_options.get(slug, {}), **options}
                 self._send_json({"ok": True})
             else:
                 self._send_json({"error": "Invalid slug or target"}, 400)
@@ -457,12 +514,24 @@ class GUIHandler(BaseHTTPRequestHandler):
         elif path == "/api/pages/bulk-route":
             slugs = body.get("slugs", [])
             target = body.get("target", "skip")
+            options = body.get("options", {})
             if target in ("cms", "product", "skip"):
                 for slug in slugs:
                     STATE.assignments[slug] = target
+                    if options:
+                        STATE.page_options[slug] = {**STATE.page_options.get(slug, {}), **options}
                 self._send_json({"ok": True, "count": len(slugs)})
             else:
                 self._send_json({"error": "Invalid target"}, 400)
+
+        elif path == "/api/pages/options":
+            slug = body.get("slug", "")
+            options = body.get("options", {})
+            if slug:
+                STATE.page_options[slug] = {**STATE.page_options.get(slug, {}), **options}
+                self._send_json({"ok": True, "options": STATE.page_options[slug]})
+            else:
+                self._send_json({"error": "Slug requis"}, 400)
 
         elif path == "/api/pages/auto-categorize":
             cats = getattr(STATE, '_wp_categories', {})

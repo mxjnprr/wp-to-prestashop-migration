@@ -382,6 +382,54 @@ body::before {
 }
 .empty-state .icon { font-size: 3em; margin-bottom: 12px; }
 .empty-state p { max-width: 400px; margin: 0 auto; }
+
+/* ── Modal overlay ─────────────────────────────────────── */
+.modal-overlay {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
+    z-index: 300; display: flex; align-items: center;
+    justify-content: center; opacity: 0; pointer-events: none;
+    transition: opacity 0.25s ease;
+}
+.modal-overlay.show { opacity: 1; pointer-events: auto; }
+.modal-box {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 28px; width: 480px;
+    max-width: 90vw; box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    transform: translateY(20px); transition: transform 0.25s ease;
+}
+.modal-overlay.show .modal-box { transform: translateY(0); }
+.modal-box h3 {
+    font-size: 1.2em; font-weight: 600; margin-bottom: 16px;
+    display: flex; align-items: center; gap: 8px;
+}
+.modal-box .separator {
+    height: 1px; background: var(--border); margin: 16px 0;
+}
+.detail-edit-group {
+    margin-top: 14px; padding: 14px;
+    background: rgba(0,0,0,0.2); border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+}
+.detail-edit-group h4 {
+    font-size: 0.85em; font-weight: 600; color: var(--accent);
+    margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.detail-edit-row {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.detail-edit-row label {
+    font-size: 0.82em; color: var(--text-dim); min-width: 110px;
+}
+.detail-edit-row input, .detail-edit-row select {
+    flex: 1; padding: 6px 10px; background: var(--bg-input);
+    border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font-family: inherit; font-size: 0.85em;
+    outline: none;
+}
+.detail-edit-row input:focus, .detail-edit-row select:focus {
+    border-color: var(--accent);
+}
 </style>
 </head>
 <body>
@@ -596,6 +644,19 @@ body::before {
 
 <!-- Toasts -->
 <div class="toast-container" id="toasts"></div>
+
+<!-- Bulk action modal -->
+<div class="modal-overlay" id="bulk-modal" onclick="if(event.target===this)closeBulkModal()">
+    <div class="modal-box">
+        <h3 id="modal-title">Configuration</h3>
+        <div id="modal-body"></div>
+        <div class="separator"></div>
+        <div class="btn-group" style="justify-content:flex-end">
+            <button class="btn btn-secondary" onclick="closeBulkModal()">Annuler</button>
+            <button class="btn btn-primary" id="modal-confirm" onclick="confirmBulkModal()">Appliquer</button>
+        </div>
+    </div>
+</div>
 
 <script>
 // ── State ────────────────────────────────────────────────────
@@ -814,14 +875,81 @@ async function bulkAction(target) {
     const slugs = Array.from(document.querySelectorAll('.page-check:checked'))
         .map(cb => cb.dataset.slug);
     if (!slugs.length) { toast('Sélectionnez des pages d\\'abord', 'error'); return; }
-    await api('POST', '/api/pages/bulk-route', { slugs, target });
+    openBulkModal(target, slugs);
+}
+
+let pendingBulk = { target: '', slugs: [] };
+
+function openBulkModal(target, slugs) {
+    pendingBulk = { target, slugs };
+    const modal = document.getElementById('bulk-modal');
+    const title = document.getElementById('modal-title');
+    const body = document.getElementById('modal-body');
+    const count = slugs.length;
+
+    if (target === 'cms') {
+        title.innerHTML = `📄 ${count} élément(s) → CMS`;
+        body.innerHTML = `
+            <p style="font-size:0.9em;color:var(--text-dim);margin-bottom:12px">
+                Choisissez la catégorie CMS de destination dans PrestaShop.
+            </p>
+            <div class="detail-edit-row">
+                <label>Catégorie CMS (ID)</label>
+                <input type="number" id="modal-cms-cat" value="1" min="1" placeholder="ID catégorie" />
+            </div>
+        `;
+    } else if (target === 'product') {
+        title.innerHTML = `🏷️ ${count} élément(s) → Produit`;
+        body.innerHTML = `
+            <p style="font-size:0.9em;color:var(--text-dim);margin-bottom:12px">
+                Comment faire correspondre ces pages aux produits PrestaShop ?
+            </p>
+            <div class="detail-edit-row">
+                <label>Mode de match</label>
+                <select id="modal-match-by">
+                    <option value="name">Par nom du produit</option>
+                    <option value="reference">Par référence produit</option>
+                </select>
+            </div>
+        `;
+    } else {
+        title.innerHTML = `⏭️ ${count} élément(s) → Ignorer`;
+        body.innerHTML = `
+            <p style="font-size:0.9em;color:var(--text-dim)">
+                Ces ${count} éléments seront ignorés lors de la migration.
+            </p>
+        `;
+    }
+    modal.classList.add('show');
+}
+
+function closeBulkModal() {
+    document.getElementById('bulk-modal').classList.remove('show');
+}
+
+async function confirmBulkModal() {
+    const { target, slugs } = pendingBulk;
+    let options = {};
+
+    if (target === 'cms') {
+        const catId = parseInt(document.getElementById('modal-cms-cat').value) || 1;
+        options = { cms_category_id: catId };
+    } else if (target === 'product') {
+        options = { match_by: document.getElementById('modal-match-by').value };
+    }
+
+    await api('POST', '/api/pages/bulk-route', { slugs, target, options });
     slugs.forEach(slug => {
         const p = pages.find(x => x.slug === slug);
-        if (p) p.target = target;
+        if (p) {
+            p.target = target;
+            p.options = { ...(p.options || {}), ...options };
+        }
     });
     updateStats();
     renderPages();
-    toast(`${slugs.length} pages → ${target.toUpperCase()}`, 'success');
+    closeBulkModal();
+    toast(`${slugs.length} éléments → ${targetLabel(target)}`, 'success');
 }
 
 async function autoCateg() {
@@ -834,6 +962,10 @@ async function autoCateg() {
 function showDetail(slug) {
     const p = pages.find(x => x.slug === slug);
     if (!p) return;
+
+    // Remove previous edit section if any
+    const oldEdit = document.getElementById('detail-edit-section');
+    if (oldEdit) oldEdit.remove();
 
     document.getElementById('detail-title').textContent = p.title;
     document.getElementById('detail-meta').innerHTML = `
@@ -850,6 +982,62 @@ function showDetail(slug) {
         <dt>Modifié</dt><dd>${p.modified || 'N/A'}</dd>
         ${p.warnings.length ? '<dt>Alertes</dt><dd>⚠️ ' + p.warnings.join(', ') + '</dd>' : ''}
     `;
+
+    // Editable options section
+    const opts = p.options || {};
+    let editHtml = '<div class="detail-edit-group">';
+    editHtml += '<h4>⚙️ Options de destination</h4>';
+
+    editHtml += `
+        <div class="detail-edit-row">
+            <label>Destination</label>
+            <select id="detail-target" onchange="detailChangeTarget('${p.slug}', this.value)">
+                <option value="cms" ${p.target==='cms'?'selected':''}>📄 Page CMS</option>
+                <option value="product" ${p.target==='product'?'selected':''}>🏷️ Produit</option>
+                <option value="skip" ${p.target==='skip'?'selected':''}>⏭️ Ignorer</option>
+            </select>
+        </div>
+    `;
+
+    if (p.target === 'cms') {
+        editHtml += `
+            <div class="detail-edit-row">
+                <label>Catégorie CMS</label>
+                <input type="number" id="detail-cms-cat" value="${opts.cms_category_id || ''}" min="1"
+                    placeholder="ID (défaut: config)" />
+            </div>
+        `;
+    } else if (p.target === 'product') {
+        editHtml += `
+            <div class="detail-edit-row">
+                <label>Produit ID</label>
+                <input type="number" id="detail-product-id" value="${opts.product_id || ''}" min="1"
+                    placeholder="ID direct (optionnel)" />
+            </div>
+            <div class="detail-edit-row">
+                <label>Référence</label>
+                <input type="text" id="detail-product-ref" value="${opts.product_reference || ''}"
+                    placeholder="REF produit (optionnel)" />
+            </div>
+            <div class="detail-edit-row">
+                <label>Mode match</label>
+                <select id="detail-match-by">
+                    <option value="name" ${(opts.match_by||'name')==='name'?'selected':''}>Par nom</option>
+                    <option value="reference" ${opts.match_by==='reference'?'selected':''}>Par référence</option>
+                </select>
+            </div>
+        `;
+    }
+
+    editHtml += `
+        <div style="margin-top:10px">
+            <button class="btn btn-sm btn-primary" onclick="saveDetailOptions('${p.slug}')">Sauvegarder</button>
+        </div>
+    </div>`;
+
+    // Insert after meta
+    document.getElementById('detail-meta').insertAdjacentHTML('afterend',
+        '<div id="detail-edit-section">' + editHtml + '</div>');
     document.getElementById('detail-preview').textContent = p.content_preview || '(vide)';
     document.getElementById('detail-thumbs').innerHTML = (p.image_urls || [])
         .map(url => `<img src="${url}" onerror="this.style.display='none'" loading="lazy">`).join('');
@@ -863,6 +1051,38 @@ function closeDetail() {
 
 function targetLabel(t) {
     return { cms: '📄 Page CMS', product: '🏷️ Produit', skip: '⏭️ Ignoré' }[t] || t;
+}
+
+async function detailChangeTarget(slug, target) {
+    await api('POST', '/api/pages/route', { slug, target });
+    const p = pages.find(x => x.slug === slug);
+    if (p) p.target = target;
+    updateStats();
+    renderPages();
+    // Re-open detail to refresh the options section
+    showDetail(slug);
+}
+
+async function saveDetailOptions(slug) {
+    const p = pages.find(x => x.slug === slug);
+    if (!p) return;
+    let options = {};
+
+    if (p.target === 'cms') {
+        const catEl = document.getElementById('detail-cms-cat');
+        if (catEl && catEl.value) options.cms_category_id = parseInt(catEl.value);
+    } else if (p.target === 'product') {
+        const pidEl = document.getElementById('detail-product-id');
+        const refEl = document.getElementById('detail-product-ref');
+        const matchEl = document.getElementById('detail-match-by');
+        if (pidEl && pidEl.value) options.product_id = parseInt(pidEl.value);
+        if (refEl && refEl.value) options.product_reference = refEl.value;
+        if (matchEl) options.match_by = matchEl.value;
+    }
+
+    await api('POST', '/api/pages/options', { slug, options });
+    p.options = { ...(p.options || {}), ...options };
+    toast('Options sauvegardées pour ' + p.title, 'success');
 }
 
 // ── Migration ────────────────────────────────────────────────
