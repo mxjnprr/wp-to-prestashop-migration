@@ -513,14 +513,37 @@ class GUIHandler(BaseHTTPRequestHandler):
                 "running": STATE.migration_running,
             })
         elif path == "/api/ps/cms-categories":
-            # Serve CMS categories from config (stored in prestashop.cms_categories)
-            raw_cats = STATE.config.get("prestashop", {}).get("cms_categories", {})
-            if raw_cats and isinstance(raw_cats, dict):
-                cats = [{"id": int(k), "name": v} for k, v in raw_cats.items()]
-                cats.sort(key=lambda c: c["id"])
-            else:
-                # Default fallback
-                cats = [{"id": 1, "name": "Accueil"}]
+            # Auto-detect CMS categories from PrestaShop, with config name overrides
+            ps_url = STATE.config.get("prestashop", {}).get("url", "")
+            ps_key = STATE.config.get("prestashop", {}).get("api_key", "")
+            name_overrides = STATE.config.get("prestashop", {}).get("cms_categories", {})
+
+            cats = []
+            if ps_url and ps_key:
+                try:
+                    from .ps_client import PrestaShopClient
+                    ps = PrestaShopClient(
+                        api_base=ps_url.rstrip("/") + "/api",
+                        api_key=ps_key,
+                    )
+                    cats = ps.list_cms_categories()
+                    # Apply user-defined name overrides from config
+                    if name_overrides and isinstance(name_overrides, dict):
+                        for cat in cats:
+                            override = name_overrides.get(cat["id"], name_overrides.get(str(cat["id"])))
+                            if override:
+                                cat["name"] = str(override)
+                except Exception as e:
+                    cats = [{"id": 1, "name": "Accueil (erreur PS)"}]
+
+            if not cats:
+                # Fallback to config-only
+                if name_overrides and isinstance(name_overrides, dict):
+                    cats = [{"id": int(k), "name": v} for k, v in name_overrides.items()]
+                    cats.sort(key=lambda c: c["id"])
+                else:
+                    cats = [{"id": 1, "name": "Accueil"}]
+
             self._send_json({"categories": cats})
         else:
             self.send_error(404)
