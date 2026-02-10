@@ -333,11 +333,36 @@ def auto_categorize(page: dict, categories: dict[int, str] = None) -> str:
 def run_migration_thread(dry_run: bool):
     STATE.migration_running = True
     STATE.migration_log = []
-    STATE.migration_progress = {"current": 0, "total": len(STATE.analyzed), "status": "running"}
+
+    # Only migrate items explicitly assigned to cms or product
+    items_to_migrate = []
+    for p in STATE.wp_pages:
+        slug = p.get("slug", "")
+        target = STATE.assignments.get(slug, "skip")
+        if target in ("cms", "product"):
+            items_to_migrate.append((p, slug, target))
+
+    STATE.migration_progress = {
+        "current": 0,
+        "total": len(items_to_migrate),
+        "status": "running",
+    }
+
+    if not items_to_migrate:
+        STATE.migration_log.append("⚠️ Aucun élément assigné à CMS ou Produit — rien à migrer.")
+        STATE.migration_log.append("Utilisez le Scanner pour assigner des pages avant de lancer la migration.")
+        STATE.migration_progress["status"] = "done"
+        STATE.migration_progress["stats"] = {
+            "cms_migrated": 0, "product_updated": 0,
+            "skipped": 0, "failed": 0, "images": 0,
+        }
+        STATE.migration_running = False
+        return
 
     try:
         from .config import load_config
         from .migrator import Migrator
+        from .router import RouteResult
         from .utils import setup_logging
 
         STATE.save_config()
@@ -346,23 +371,84 @@ def run_migration_thread(dry_run: bool):
 
         setup_logging(log_file=config.migration.log_file, verbose=True)
 
-        # Patch logger to capture output
-        class GUIHandler(logging.Handler):
+        # Patch logger to capture output for the GUI
+        class _GUILogHandler(logging.Handler):
             def emit(self, record):
                 msg = self.format(record)
                 STATE.migration_log.append(msg)
-                # Update progress from log messages
-                match = re.search(r'\[(\d+)/(\d+)\]', msg)
-                if match:
-                    STATE.migration_progress["current"] = int(match.group(1))
-                    STATE.migration_progress["total"] = int(match.group(2))
 
-        gui_handler = GUIHandler()
+        gui_handler = _GUILogHandler()
         gui_handler.setFormatter(logging.Formatter('%(message)s'))
         logging.getLogger("wp2presta").addHandler(gui_handler)
 
         migrator = Migrator(config)
-        migrator.run()
+
+        # Header
+        logger.info("=" * 60)
+        logger.info("  WordPress → PrestaShop Migration")
+        logger.info(f"  Mode: {'🔍 DRY RUN' if dry_run else '🚀 LIVE'}")
+        logger.info(f"  Éléments à migrer: {len(items_to_migrate)}")
+        logger.info("=" * 60)
+
+        # Test PS connection first (if live)
+        if not dry_run:
+            if not migrator.ps.test_connection():
+                logger.error("❌ Impossible de se connecter à PrestaShop. Abandon.")
+                STATE.migration_progress["status"] = "error"
+                STATE.migration_progress["error"] = "Connexion PrestaShop échouée"
+                return
+
+        # Prepare temp dir for images
+        import os
+        if config.migration.download_images:
+            os.makedirs(config.migration.image_temp_dir, exist_ok=True)
+
+        # Iterate only assigned items
+        for i, (wp_page, slug, target) in enumerate(items_to_migrate, 1):
+            STATE.migration_progress["current"] = i
+            page_data = migrator.wp.extract_page_data(wp_page)
+            title = page_data.get("title", "(untitled)")
+            opts = STATE.page_options.get(slug, {})
+
+            # Build route from GUI assignment
+            route = RouteResult(
+                target=target,
+                slug=slug,
+                title=title,
+                rule_name="gui",
+                cms_category_id=opts.get("cms_category_id",
+                    config.prestashop.cms_category_id),
+                match_by=opts.get("match_by", "name"),
+                product_id=opts.get("product_id"),
+                product_reference=opts.get("product_reference"),
+            )
+
+            label = "CMS" if target == "cms" else "PRODUIT"
+            logger.info(f"[{i}/{len(items_to_migrate)}] {title} (/{slug}) → {label}")
+
+            try:
+                if target == "cms":
+                    migrator._migrate_as_cms(page_data, route)
+                elif target == "product":
+                    migrator._migrate_as_product(page_data, route)
+            except Exception as e:
+                logger.error(f"  ❌ Erreur: {e}")
+                migrator.stats["failed"] += 1
+
+        # Summary
+        logger.info("━" * 40)
+        logger.info("  RÉSUMÉ DE LA MIGRATION")
+        logger.info("━" * 40)
+        logger.info(f"  📄 Pages CMS migrées:    {migrator.stats['cms_migrated']}")
+        logger.info(f"  🏷️  Produits mis à jour:  {migrator.stats['product_updated']}")
+        logger.info(f"  ⏭️  Pages ignorées:       {migrator.stats['skipped']}")
+        logger.info(f"  ❌ Échecs:                {migrator.stats['failed']}")
+        logger.info(f"  🖼️  Images traitées:      {migrator.stats['images']}")
+
+        # Cleanup
+        import shutil
+        if os.path.exists(config.migration.image_temp_dir):
+            shutil.rmtree(config.migration.image_temp_dir, ignore_errors=True)
 
         STATE.migration_progress["status"] = "done"
         STATE.migration_progress["stats"] = migrator.stats
@@ -372,6 +458,7 @@ def run_migration_thread(dry_run: bool):
         STATE.migration_progress["error"] = str(e)
     finally:
         STATE.migration_running = False
+
 
 
 # ── HTTP Handler ─────────────────────────────────────────────────
