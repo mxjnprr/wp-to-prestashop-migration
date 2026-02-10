@@ -208,3 +208,195 @@ class PrestaShopClient:
             if hasattr(e, "response") and e.response is not None:
                 logger.debug(f"PS: response body: {e.response.text[:500]}")
             return False
+
+    # ─────────────────────────────────────────────────────────────
+    # Product methods
+    # ─────────────────────────────────────────────────────────────
+
+    def find_product_by_name(self, name: str) -> Optional[int]:
+        """
+        Search for a product by name (case-insensitive partial match).
+        Returns the first matching product ID, None if not found.
+        """
+        url = f"{self.api_base}/products"
+        params = {
+            "output_format": "JSON",
+            "filter[name]": f"%{name}%",
+            "display": "[id,name]",
+            "limit": "5",
+        }
+        try:
+            resp = self.session.get(url, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            products = data.get("products", [])
+
+            if isinstance(products, list) and len(products) > 0:
+                pid = int(products[0].get("id", 0))
+                pname = products[0].get("name", "")
+                logger.info(f"PS: found product '{pname}' (ID {pid}) for query '{name}'")
+                return pid or None
+            elif isinstance(products, dict) and "id" in products:
+                return int(products["id"]) or None
+
+            logger.debug(f"PS: no product found for name '{name}'")
+            return None
+        except (requests.exceptions.RequestException, ValueError, KeyError) as e:
+            logger.debug(f"PS: product name lookup for '{name}': {e}")
+            return None
+
+    def find_product_by_reference(self, reference: str) -> Optional[int]:
+        """
+        Search for a product by reference code.
+        Returns the product ID, None if not found.
+        """
+        url = f"{self.api_base}/products"
+        params = {
+            "output_format": "JSON",
+            "filter[reference]": reference,
+            "display": "[id,reference,name]",
+        }
+        try:
+            resp = self.session.get(url, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            products = data.get("products", [])
+
+            if isinstance(products, list) and len(products) > 0:
+                pid = int(products[0].get("id", 0))
+                logger.info(f"PS: found product (ID {pid}) for ref '{reference}'")
+                return pid or None
+            elif isinstance(products, dict) and "id" in products:
+                return int(products["id"]) or None
+
+            logger.debug(f"PS: no product found for reference '{reference}'")
+            return None
+        except (requests.exceptions.RequestException, ValueError, KeyError) as e:
+            logger.debug(f"PS: product ref lookup for '{reference}': {e}")
+            return None
+
+    def get_product(self, product_id: int) -> Optional[dict]:
+        """
+        Fetch full product data (JSON).
+        """
+        url = f"{self.api_base}/products/{product_id}"
+        params = {"output_format": "JSON"}
+        try:
+            resp = self.session.get(url, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("product", data)
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logger.error(f"PS: failed to get product {product_id}: {e}")
+            return None
+
+    def update_product_description(
+        self,
+        product_id: int,
+        description: str,
+        meta_title: str = "",
+        meta_description: str = "",
+    ) -> bool:
+        """
+        Update a product's description (and optionally SEO fields).
+        Uses the PrestaShop XML API.
+        """
+        lang_id = str(self.default_lang_id)
+
+        # First, fetch current product XML to preserve all other fields
+        url = f"{self.api_base}/products/{product_id}"
+        try:
+            resp = self.session.get(url, timeout=15)
+            resp.raise_for_status()
+            root = ET.fromstring(resp.content)
+        except (requests.exceptions.RequestException, ET.ParseError) as e:
+            logger.error(f"PS: failed to fetch product {product_id} for update: {e}")
+            return False
+
+        product_elem = root.find(".//product")
+        if product_elem is None:
+            logger.error(f"PS: no <product> element in response for ID {product_id}")
+            return False
+
+        # Remove read-only nodes that PS rejects on PUT
+        for readonly_tag in [
+            "manufacturer_name", "quantity", "position_in_category",
+            "type", "id_default_image", "associations",
+        ]:
+            elem = product_elem.find(readonly_tag)
+            if elem is not None:
+                product_elem.remove(elem)
+
+        # Update description
+        desc_elem = product_elem.find(f".//description/language[@id='{lang_id}']")
+        if desc_elem is None:
+            # Create the structure
+            desc_parent = product_elem.find("description")
+            if desc_parent is None:
+                desc_parent = ET.SubElement(product_elem, "description")
+            desc_elem = ET.SubElement(desc_parent, "language")
+            desc_elem.set("id", lang_id)
+        desc_elem.text = description
+
+        # Update SEO fields if provided
+        if meta_title:
+            mt_elem = product_elem.find(f".//meta_title/language[@id='{lang_id}']")
+            if mt_elem is None:
+                mt_parent = product_elem.find("meta_title")
+                if mt_parent is None:
+                    mt_parent = ET.SubElement(product_elem, "meta_title")
+                mt_elem = ET.SubElement(mt_parent, "language")
+                mt_elem.set("id", lang_id)
+            mt_elem.text = meta_title[:128]
+
+        if meta_description:
+            md_elem = product_elem.find(f".//meta_description/language[@id='{lang_id}']")
+            if md_elem is None:
+                md_parent = product_elem.find("meta_description")
+                if md_parent is None:
+                    md_parent = ET.SubElement(product_elem, "meta_description")
+                md_elem = ET.SubElement(md_parent, "language")
+                md_elem.set("id", lang_id)
+            md_elem.text = meta_description[:512]
+
+        # PUT back
+        xml_payload = ET.tostring(root, encoding="unicode", xml_declaration=False)
+        try:
+            resp = self.session.put(
+                url,
+                data=xml_payload.encode("utf-8"),
+                headers={"Content-Type": "text/xml; charset=utf-8"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            logger.info(f"PS: updated product {product_id} description")
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.error(f"PS: failed to update product {product_id}: {e}")
+            if hasattr(e, "response") and e.response is not None:
+                logger.debug(f"PS: response body: {e.response.text[:500]}")
+            return False
+
+    def list_products(self, limit: int = 100) -> list[dict]:
+        """
+        List all products (basic info) for preview/matching purposes.
+        """
+        url = f"{self.api_base}/products"
+        params = {
+            "output_format": "JSON",
+            "display": "[id,name,reference,active]",
+            "limit": str(limit),
+        }
+        try:
+            resp = self.session.get(url, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            products = data.get("products", [])
+            if isinstance(products, dict):
+                products = [products]
+            logger.info(f"PS: listed {len(products)} products")
+            return products
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logger.error(f"PS: failed to list products: {e}")
+            return []
+

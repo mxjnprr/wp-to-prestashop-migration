@@ -23,13 +23,12 @@ prestashop:
   # Default language ID in PrestaShop (1 = first language installed, usually French)
   default_lang_id: 1
   
-  # Target CMS category ID where pages will be created
+  # Default CMS category ID where unspecified pages will be created
   # 1 = "Home" category (root). Create a dedicated category in BO if desired.
   cms_category_id: 1
 
 migration:
   # Dry-run mode: if true, no changes will be made to PrestaShop
-  # Pages will be fetched from WP and logged, but not pushed
   dry_run: false
   
   # Log file path (relative to project root)
@@ -44,3 +43,153 @@ migration:
   # If PrestaShop is on the same server, direct path to /img/cms/
   # Leave empty to upload via API or skip image upload
   image_target_dir: ""
+
+# =============================================================================
+# Mapping rules — control WHERE each WP page goes in PrestaShop
+# =============================================================================
+# Rules are evaluated in order: first match wins.
+# Each rule can match by:
+#   slugs:    [list, of, exact, slugs]
+#   patterns: ["glob*-patterns"]
+# Targets: "cms", "product", "skip"
+mapping:
+  # Default action for pages that don't match any rule
+  default: skip
+
+  rules:
+    # ─── CMS Pages ──────────────────────────────────────────────
+    - name: content_pages
+      target: cms
+      cms_category_id: 1  # Home / Root category
+      slugs:
+        - valeurs
+        - garantie
+        - recrutement
+        - contact
+        - confidentialite
+        - evenements
+        - news
+        - recits
+        - team
+        - documents-securite
+
+    # ─── Ambassadeurs (dans une catégorie CMS dédiée) ──────────
+    - name: ambassadors
+      target: cms
+      cms_category_id: 9  # Créer la catégorie "Ambassadeurs" dans BO
+      slugs:
+        - ambassadeurs
+        - alix-aubriot
+        - antoine-girard
+        - arthur-moindrot
+        - baptiste-lambert
+        - charlotte-martin
+        - cody-tuttle
+        - damien-lacaze
+        - david-gottler
+        - hugues-orlianges
+        - mathieu-rouanet-2
+        - matt-jantzen
+        - maxime-pinot
+        - meryl-delferriere
+        - nanda-walliser
+        - nicola-donini
+        - pauline-music
+        - pierre-remy
+        - samuel-avenne
+        - sandrine-roy
+        - serge-klipfel
+        - stephane-drouin
+        - thibault-voglet
+        - vicky-chevallier
+        - yael-margelisch
+
+    # ─── Produits actuels → description produit PS ─────────────
+    # match_by: "name" (cherche par nom dans PS) or "reference" 
+    # product_map: slug WP → référence produit PS (optionnel, override)
+    - name: current_products
+      target: product
+      match_by: name
+      slugs:
+        - kliff-iii
+        - kooka
+        - karma-iii
+        - kuik-iii
+        - koncept
+        - kolibri-evo
+        - kanibal-race-ii
+        - kompact
+        - kid
+        - k-flex
+        - karver_2
+        - karver-ii-biplace
+        - kruyer-iii
+      # Optional explicit mapping: wp_slug → prestashop_reference
+      # product_map:
+      #   kliff-iii: "KLIFF3"
+      #   kooka: "KOOKA"
+
+    # ─── Accessoires & Saks actuels → description produit PS ───
+    - name: accessories
+      target: product
+      match_by: name
+      slugs:
+        - sak-k17
+        - sak-k27
+        - sak-k60
+        - sak-k75
+        - sak-k80
+        - sak-kolibri-40l
+        - sak-iii
+        - sac-biplace-2
+        - kontainer-kockpit
+        - connecteurs
+        - parachutes
+        - accelerateurs
+        - drag-chute
+        - elevateurs-de-secours
+        - extension-de-kockpit
+        - kockpit-safe
+        - kairn
+
+    # ─── Pages "catalogue" catégorie → ignorer (PS a déjà) ────
+    - name: category_pages
+      target: skip
+      slugs:
+        - sellettes-2
+        - accessoires
+        - saks
+        - kockpits
+        - kontainers-2
+        - produits
+        - produits-stoppes
+        - accueil
+        - accueil-test
+        - cookie-policy-eu
+        - vetements
+        - reflexions-techniques
+
+    # ─── Anciens produits → ignorer ────────────────────────────
+    - name: legacy_products
+      target: skip
+      slugs:
+        - kliff
+        - kliff-ii
+        - karma
+        - karma-ii
+        - karver
+        - karver_ii
+        - kruyer
+        - kruyer_2
+        - kuik
+        - kuik-2
+        - kolibri
+        - kool
+        - kanibal-race
+        - kamasutra-ii
+        - sak
+        - sak-ii
+        - sak-ballast-reversible
+        - sak-k220
+        - kontainer-v3-light
+        - kontainer-v4

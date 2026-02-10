@@ -48,10 +48,18 @@ class MigrationConfig:
 
 
 @dataclass
+class MappingConfig:
+    """Raw mapping configuration — parsed by MigrationRouter."""
+    rules: list = field(default_factory=list)
+    default: str = "skip"
+
+
+@dataclass
 class AppConfig:
     wordpress: WordPressConfig
     prestashop: PrestaShopConfig
     migration: MigrationConfig
+    mapping: MappingConfig = field(default_factory=MappingConfig)
 
 
 def load_config(config_path: str) -> AppConfig:
@@ -110,8 +118,16 @@ def load_config(config_path: str) -> AppConfig:
         image_target_dir=mig_raw.get("image_target_dir", ""),
     )
 
+    # Build Mapping config
+    map_raw = raw.get("mapping", {})
+    map_config = MappingConfig(
+        rules=map_raw.get("rules", []),
+        default=map_raw.get("default", "skip"),
+    )
+
     return AppConfig(
         wordpress=wp_config,
         prestashop=ps_config,
         migration=mig_config,
+        mapping=map_config,
     )

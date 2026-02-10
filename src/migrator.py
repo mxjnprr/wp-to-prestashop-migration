@@ -1,8 +1,10 @@
 """
 Migration orchestrator.
 Coordinates the ETL pipeline: Extract (WP) → Transform → Load (PrestaShop).
+Supports three targets: CMS page, product description, or skip.
 """
 
+import html
 import logging
 import os
 import shutil
@@ -12,6 +14,7 @@ from .config import AppConfig
 from .wp_client import WordPressClient
 from .ps_client import PrestaShopClient
 from .transformers import ContentTransformer
+from .router import MigrationRouter, RouteResult, build_router_from_config
 from .utils import format_summary
 
 logger = logging.getLogger("wp2presta")
@@ -41,11 +44,18 @@ class Migrator:
             image_temp_dir=config.migration.image_temp_dir,
         )
 
+        # Build router from mapping config
+        self.router = build_router_from_config({
+            "rules": config.mapping.rules,
+            "default": config.mapping.default,
+        })
+
         # Counters
         self.stats = {
-            "migrated": 0,
-            "failed": 0,
+            "cms_migrated": 0,
+            "product_updated": 0,
             "skipped": 0,
+            "failed": 0,
             "images": 0,
         }
 
@@ -57,6 +67,14 @@ class Migrator:
         logger.info(f"  PS:    {self.config.prestashop.url}")
         logger.info(f"  Mode:  {'🔍 DRY RUN' if self.dry_run else '🚀 LIVE'}")
         logger.info("=" * 60)
+
+        # Router summary
+        summary = self.router.get_summary()
+        logger.info(
+            f"  Router: {summary['total_rules']} rules "
+            f"(CMS: {summary['cms_rules']}, Product: {summary['product_rules']}, "
+            f"Skip: {summary['skip_rules']}), default: {summary['default']}"
+        )
 
         # Step 0: Test PrestaShop connection
         if not self.dry_run:
@@ -77,39 +95,52 @@ class Migrator:
             logger.warning("No pages found on WordPress. Nothing to migrate.")
             return
 
-        # Step 3: Process each page
+        # Step 3: Route and process each page
         logger.info("━" * 40)
-        logger.info("Phase 2: Transforming and loading pages...")
+        logger.info("Phase 2: Routing, transforming and loading pages...")
 
         for i, wp_page in enumerate(wp_pages, 1):
             page_data = self.wp.extract_page_data(wp_page)
             title = page_data.get("title", "(untitled)")
             slug = page_data.get("slug", "")
 
-            logger.info(f"[{i}/{len(wp_pages)}] Processing: {title} (/{slug})")
+            # Route this page
+            route = self.router.route(slug, title)
+            logger.info(
+                f"[{i}/{len(wp_pages)}] {title} (/{slug}) "
+                f"→ {route.target.upper()} [{route.rule_name}]"
+            )
+
+            if route.target == "skip":
+                self.stats["skipped"] += 1
+                continue
 
             try:
-                self._migrate_single_page(page_data)
+                if route.target == "cms":
+                    self._migrate_as_cms(page_data, route)
+                elif route.target == "product":
+                    self._migrate_as_product(page_data, route)
             except Exception as e:
                 logger.error(f"  ❌ Unexpected error: {e}")
                 self.stats["failed"] += 1
 
         # Step 4: Summary
-        summary = format_summary(
-            migrated=self.stats["migrated"],
-            failed=self.stats["failed"],
-            skipped=self.stats["skipped"],
-            images=self.stats["images"],
-        )
-        logger.info(summary)
+        logger.info("━" * 40)
+        logger.info("  RÉSUMÉ DE LA MIGRATION")
+        logger.info("━" * 40)
+        logger.info(f"  📄 Pages CMS migrées:    {self.stats['cms_migrated']}")
+        logger.info(f"  🏷️  Produits mis à jour:  {self.stats['product_updated']}")
+        logger.info(f"  ⏭️  Pages ignorées:       {self.stats['skipped']}")
+        logger.info(f"  ❌ Échecs:                {self.stats['failed']}")
+        logger.info(f"  🖼️  Images traitées:      {self.stats['images']}")
 
         # Cleanup temp images
         if os.path.exists(self.config.migration.image_temp_dir):
             shutil.rmtree(self.config.migration.image_temp_dir, ignore_errors=True)
             logger.debug("Cleaned up temp image directory.")
 
-    def _migrate_single_page(self, page_data: dict[str, Any]) -> None:
-        """Process and migrate a single page."""
+    def _migrate_as_cms(self, page_data: dict[str, Any], route: RouteResult) -> None:
+        """Migrate a WP page as a PrestaShop CMS page."""
         slug = page_data.get("slug", "")
         title = page_data.get("title", "(untitled)")
 
@@ -124,39 +155,94 @@ class Migrator:
                 logger.info(f"  🖼️  Found {len(images)} image(s) in content")
                 self._handle_images(images)
 
+        # Determine CMS category
+        cms_cat = route.cms_category_id or self.config.prestashop.cms_category_id
+
         if self.dry_run:
-            logger.info(f"  🔍 [DRY RUN] Would migrate: {title}")
-            logger.info(f"     Slug: {transformed['slug']}")
-            logger.info(f"     Meta title: {transformed['meta_title'][:80]}")
-            logger.info(f"     Meta desc: {transformed['meta_description'][:80]}")
-            logger.info(f"     Content length: {len(transformed['content'])} chars")
-            self.stats["migrated"] += 1
+            logger.info(f"  🔍 [DRY RUN] Would create CMS page: {title}")
+            logger.info(f"     Slug: {transformed['slug']}, CMS category: {cms_cat}")
+            self.stats["cms_migrated"] += 1
             return
 
         # Check if page already exists (idempotency)
         existing_id = self.ps.find_cms_page_by_slug(transformed["slug"])
 
         if existing_id:
-            logger.info(f"  🔄 Page exists (ID {existing_id}), updating...")
+            logger.info(f"  🔄 CMS page exists (ID {existing_id}), updating...")
             success = self.ps.update_cms_page(
                 page_id=existing_id,
                 page_data=transformed,
-                cms_category_id=self.config.prestashop.cms_category_id,
+                cms_category_id=cms_cat,
             )
         else:
             logger.info(f"  ✨ Creating new CMS page...")
             new_id = self.ps.create_cms_page(
                 page_data=transformed,
-                cms_category_id=self.config.prestashop.cms_category_id,
+                cms_category_id=cms_cat,
             )
             success = new_id is not None
 
         if success:
-            self.stats["migrated"] += 1
-            logger.info(f"  ✅ {title}")
+            self.stats["cms_migrated"] += 1
+            logger.info(f"  ✅ CMS: {title}")
         else:
             self.stats["failed"] += 1
-            logger.error(f"  ❌ Failed: {title}")
+            logger.error(f"  ❌ CMS failed: {title}")
+
+    def _migrate_as_product(self, page_data: dict[str, Any], route: RouteResult) -> None:
+        """Update a PrestaShop product description from WP page content."""
+        slug = page_data.get("slug", "")
+        title = page_data.get("title", "(untitled)")
+
+        # Transform content
+        self.transformer.reset_images()
+        transformed = self.transformer.transform_page(page_data)
+
+        # Handle images
+        if self.config.migration.download_images:
+            images = self.transformer.get_discovered_images()
+            if images:
+                logger.info(f"  🖼️  Found {len(images)} image(s) in content")
+                self._handle_images(images)
+
+        # Find matching PS product
+        product_id = None
+        if route.product_id:
+            product_id = route.product_id
+            logger.info(f"  🎯 Direct product ID mapping: {product_id}")
+        elif route.product_reference:
+            product_id = self.ps.find_product_by_reference(route.product_reference)
+        elif route.match_by == "reference":
+            product_id = self.ps.find_product_by_reference(slug)
+        else:
+            # match_by "name" — use title
+            clean_title = html.unescape(title).strip()
+            product_id = self.ps.find_product_by_name(clean_title)
+
+        if not product_id:
+            logger.warning(f"  ⚠️ No matching PS product for '{title}' — skipping")
+            self.stats["skipped"] += 1
+            return
+
+        if self.dry_run:
+            logger.info(f"  🔍 [DRY RUN] Would update product {product_id}: {title}")
+            logger.info(f"     Content length: {len(transformed['content'])} chars")
+            self.stats["product_updated"] += 1
+            return
+
+        success = self.ps.update_product_description(
+            product_id=product_id,
+            description=transformed["content"],
+            meta_title=transformed.get("meta_title", ""),
+            meta_description=transformed.get("meta_description", ""),
+        )
+
+        if success:
+            self.stats["product_updated"] += 1
+            logger.info(f"  ✅ Product {product_id}: {title}")
+        else:
+            self.stats["failed"] += 1
+            logger.error(f"  ❌ Product update failed: {title}")
 
     def _handle_images(self, images: list[dict[str, str]]) -> None:
         """Download images from WordPress and place them for PrestaShop."""
@@ -194,6 +280,5 @@ class Migrator:
                     logger.warning(f"    ⚠️ Could not copy {filename} to target: {e}")
             else:
                 logger.info(f"    💾 Downloaded: {filename} (in {temp_dir}/)")
-                logger.info(f"       ℹ️ Set migration.image_target_dir to auto-deploy images")
 
             self.stats["images"] += 1
