@@ -57,6 +57,7 @@ class ContentTransformer:
     def _transform_html_content(self, html_content: str) -> str:
         """
         Process HTML content:
+        - Strip WordPress shortcodes (Divi, WPBakery, etc.)
         - Discover and catalog images for download
         - Remove WordPress-specific CSS classes (wp-block-*, etc.)
         - Clean up empty/unnecessary elements
@@ -64,9 +65,16 @@ class ContentTransformer:
         if not html_content:
             return ""
 
+        # 1. Extract image URLs from shortcode attributes before stripping
+        #    e.g. [et_pb_fullwidth_image src="https://...jpg" ...]
+        html_content = self._extract_shortcode_images(html_content)
+
+        # 2. Strip ALL WordPress shortcodes (Divi, WPBakery, etc.)
+        html_content = self._strip_shortcodes(html_content)
+
         soup = BeautifulSoup(html_content, "html.parser")
 
-        # Process images
+        # Process images (standard <img> tags)
         self._process_images(soup)
 
         # Remove WordPress-specific classes
@@ -78,6 +86,29 @@ class ContentTransformer:
                 p.decompose()
 
         return str(soup)
+
+    def _extract_shortcode_images(self, content: str) -> str:
+        """Extract image URLs from shortcode attributes and convert to <img> tags."""
+        # Match shortcodes with src= attribute (Divi images, galleries, etc.)
+        # [et_pb_fullwidth_image src="https://...jpg" ...] → <img src="..."/>
+        img_pattern = re.compile(
+            r'\[et_pb_(?:fullwidth_)?image\s+[^\]]*?src=["\u00BB]([^"\u00AB\]]+)["\u00AB][^\]]*\]',
+            re.IGNORECASE
+        )
+        content = img_pattern.sub(r'<img src="\1" />', content)
+        return content
+
+    @staticmethod
+    def _strip_shortcodes(content: str) -> str:
+        """Remove all WordPress shortcodes [tag ...] and [/tag], keeping inner text."""
+        # Remove closing shortcode tags: [/et_pb_text], [/vc_column], etc.
+        content = re.sub(r'\[/[^\]]+\]', '', content)
+        # Remove self-closing and opening shortcode tags: [et_pb_section ...], [vc_row], etc.
+        # Use » and « as quote variants (Divi encodes quotes this way)
+        content = re.sub(r'\[[a-zA-Z_][^\]]*\]', '', content)
+        # Clean up excessive blank lines left behind
+        content = re.sub(r'\n{3,}', '\n\n', content)
+        return content.strip()
 
     def _process_images(self, soup: BeautifulSoup) -> None:
         """
