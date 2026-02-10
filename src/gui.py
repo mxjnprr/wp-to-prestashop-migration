@@ -77,29 +77,102 @@ STATE = AppState()
 
 # ── WordPress scanner ────────────────────────────────────────────
 
-def scan_wordpress(wp_url: str) -> list[dict]:
-    api_base = wp_url.rstrip("/") + "/wp-json/wp/v2"
-    all_pages = []
+# Spam category keywords to auto-filter
+SPAM_KEYWORDS = [
+    "casino", "1win", "1xbet", "aviator", "plinko", "bet", "poker",
+    "gambling", "slot", "roulette", "blackjack", "mostbet", "pinco",
+    "masalbet", "basaribet", "bankobet", "glory-casinos", "pelican-casino",
+    "king-johnnie", "vovan", "ozwin", "maribet", "b1bet", "bbrbet",
+    "888starz", "22bet", "casibom", "book-of-ra",
+]
+
+
+def _fetch_wp_categories(api_base: str) -> dict[int, str]:
+    """Fetch all WP categories and return {id: name} mapping."""
+    cats = {}
     page_num = 1
+    while True:
+        try:
+            resp = requests.get(
+                f"{api_base}/categories",
+                params={"per_page": 100, "page": page_num, "_fields": "id,name,slug,count"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data:
+                break
+            for c in data:
+                cats[c["id"]] = c.get("name", c.get("slug", ""))
+            if page_num >= int(resp.headers.get("X-WP-TotalPages", 1)):
+                break
+            page_num += 1
+        except Exception:
+            break
+    return cats
+
+
+def _is_spam(slug: str, title: str) -> bool:
+    """Check if a post looks like spam based on slug/title."""
+    text = (slug + " " + title).lower()
+    return any(kw in text for kw in SPAM_KEYWORDS)
+
+
+def _fetch_all_items(api_base: str, endpoint: str, wp_type: str) -> list[dict]:
+    """Generic paginated WP REST API fetcher."""
+    all_items = []
+    page_num = 1
+    fields = "id,title,content,excerpt,slug,date,modified,featured_media,yoast_head_json"
+    if endpoint == "posts":
+        fields += ",categories"
 
     while True:
-        url = f"{api_base}/pages"
         params = {
             "per_page": 100, "page": page_num, "status": "publish",
-            "_fields": "id,title,content,excerpt,slug,date,modified,featured_media,yoast_head_json",
+            "_fields": fields,
         }
-        resp = requests.get(url, params=params, timeout=30)
+        resp = requests.get(f"{api_base}/{endpoint}", params=params, timeout=30)
         resp.raise_for_status()
-        pages = resp.json()
-        if not pages:
+        items = resp.json()
+        if not items:
             break
-        all_pages.extend(pages)
+        for item in items:
+            item["_wp_type"] = wp_type
+        all_items.extend(items)
         total_pages = int(resp.headers.get("X-WP-TotalPages", 1))
         if page_num >= total_pages:
             break
         page_num += 1
 
-    return all_pages
+    return all_items
+
+
+def scan_wordpress(wp_url: str) -> tuple[list[dict], dict[int, str]]:
+    """Fetch all published pages AND posts. Returns (items, categories)."""
+    api_base = wp_url.rstrip("/") + "/wp-json/wp/v2"
+
+    # Fetch categories first
+    categories = _fetch_wp_categories(api_base)
+
+    # Fetch pages + posts
+    pages = _fetch_all_items(api_base, "pages", "page")
+    posts = _fetch_all_items(api_base, "posts", "post")
+
+    # Filter out spam posts
+    clean_posts = []
+    spam_count = 0
+    for p in posts:
+        title = p.get("title", {}).get("rendered", "")
+        slug = p.get("slug", "")
+        if _is_spam(slug, title):
+            spam_count += 1
+        else:
+            clean_posts.append(p)
+
+    if spam_count:
+        logger.info(f"Filtered {spam_count} spam posts")
+
+    return pages + clean_posts, categories
 
 
 def analyze_page(page: dict) -> dict:
@@ -132,10 +205,16 @@ def analyze_page(page: dict) -> dict:
     else:
         size_h = f"{size / (1024 * 1024):.1f} MB"
 
+    # Resolve category names
+    cat_ids = page.get("categories", [])
+    wp_type = page.get("_wp_type", "page")
+
     return {
         "wp_id": page.get("id", 0),
         "title": title,
         "slug": slug,
+        "wp_type": wp_type,
+        "wp_categories": cat_ids,
         "content_size": size_h,
         "content_size_bytes": size,
         "content_preview": text,
@@ -150,25 +229,48 @@ def analyze_page(page: dict) -> dict:
     }
 
 
-def auto_categorize(page: dict) -> str:
+def auto_categorize(page: dict, categories: dict[int, str] = None) -> str:
     slug = page["slug"]
     title = page["title"]
     img_count = page["image_count"]
     size = page["content_size_bytes"]
+    wp_type = page.get("wp_type", "page")
+    cat_ids = page.get("wp_categories", [])
 
+    # Resolve category names
+    cat_names = []
+    if categories and cat_ids:
+        cat_names = [categories.get(c, "").lower() for c in cat_ids]
+
+    # Posts (articles) → default to CMS unless spam
+    if wp_type == "post":
+        # Check if spam by category name
+        for cn in cat_names:
+            if any(kw in cn for kw in SPAM_KEYWORDS):
+                return "skip"
+        return "cms"  # All legit posts → CMS by default
+
+    # Pages: product-like (many images + large content)
     if img_count >= 10 and size > 15000:
         return "product"
+
+    # Pages: index/listing pages
     if slug in ("sellettes", "accessoires", "saks", "produits", "kockpits",
                 "kontainers", "produits-stoppes", "vetements", "parachutes"):
         return "skip"
+
+    # Pages: ambassador profiles (First Last pattern)
     if re.match(r'^[a-z]+-[a-z]+(-\d+)?$', slug):
         words = title.split()
         if len(words) >= 2 and all(w[0:1].isupper() for w in words if w):
             return "cms"
+
+    # Pages: known content pages
     content_slugs = ["valeurs", "garantie", "recrutement", "contact", "evenements",
                      "news", "recits", "team", "confidentialite", "documents-securite"]
     if slug in content_slugs:
         return "cms"
+
     return "skip"
 
 
@@ -313,17 +415,29 @@ class GUIHandler(BaseHTTPRequestHandler):
                 return
 
             try:
-                STATE.wp_pages = scan_wordpress(wp_url)
+                STATE.wp_pages, wp_categories = scan_wordpress(wp_url)
                 STATE.analyzed = [analyze_page(p) for p in STATE.wp_pages]
                 STATE.analyzed.sort(key=lambda p: p["slug"])
+
+                # Resolve category names and store for later use
+                STATE._wp_categories = wp_categories
+                for item in STATE.analyzed:
+                    item["category_names"] = [
+                        wp_categories.get(c, "?") for c in item.get("wp_categories", [])
+                    ]
 
                 # Auto-categorize
                 STATE.assignments = {}
                 for p in STATE.analyzed:
-                    STATE.assignments[p["slug"]] = auto_categorize(p)
+                    STATE.assignments[p["slug"]] = auto_categorize(p, wp_categories)
+
+                page_count = sum(1 for p in STATE.analyzed if p.get("wp_type") == "page")
+                post_count = sum(1 for p in STATE.analyzed if p.get("wp_type") == "post")
 
                 self._send_json({
                     "total": len(STATE.analyzed),
+                    "pages": page_count,
+                    "posts": post_count,
                     "cms": sum(1 for t in STATE.assignments.values() if t == "cms"),
                     "product": sum(1 for t in STATE.assignments.values() if t == "product"),
                     "skip": sum(1 for t in STATE.assignments.values() if t == "skip"),
@@ -351,8 +465,9 @@ class GUIHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Invalid target"}, 400)
 
         elif path == "/api/pages/auto-categorize":
+            cats = getattr(STATE, '_wp_categories', {})
             for p in STATE.analyzed:
-                STATE.assignments[p["slug"]] = auto_categorize(p)
+                STATE.assignments[p["slug"]] = auto_categorize(p, cats)
             self._send_json({
                 "cms": sum(1 for t in STATE.assignments.values() if t == "cms"),
                 "product": sum(1 for t in STATE.assignments.values() if t == "product"),

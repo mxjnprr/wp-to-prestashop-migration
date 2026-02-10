@@ -228,6 +228,18 @@ body::before {
 
 .slug-text { color: var(--cyan); font-family: 'JetBrains Mono', monospace; font-size: 0.85em; }
 
+/* Type badges */
+.type-badge {
+    padding: 2px 8px; border-radius: 10px; font-size: 0.75em;
+    font-weight: 600; letter-spacing: 0.5px; display: inline-block;
+}
+.type-badge.type-page { background: rgba(102,126,234,0.15); color: var(--accent); }
+.type-badge.type-post { background: rgba(255,167,38,0.15); color: var(--orange); }
+.category-tag {
+    padding: 1px 6px; border-radius: 6px; font-size: 0.7em;
+    background: rgba(79,195,247,0.1); color: var(--cyan); margin-left: 4px;
+}
+
 /* Target selector in table */
 .target-select {
     padding: 4px 8px; border-radius: 6px; border: none;
@@ -479,7 +491,9 @@ body::before {
 
         <div id="scan-results" style="display:none">
             <div class="stats-bar">
-                <div class="stat-box stat-total"><div class="stat-value" id="stat-total">0</div><div class="stat-label">Pages</div></div>
+                <div class="stat-box stat-total"><div class="stat-value" id="stat-total">0</div><div class="stat-label">Total</div></div>
+                <div class="stat-box"><div class="stat-value" id="stat-pages" style="color:var(--accent)">0</div><div class="stat-label">Pages</div></div>
+                <div class="stat-box"><div class="stat-value" id="stat-posts" style="color:var(--orange)">0</div><div class="stat-label">Articles</div></div>
                 <div class="stat-box stat-cms"><div class="stat-value" id="stat-cms">0</div><div class="stat-label">→ CMS</div></div>
                 <div class="stat-box stat-product"><div class="stat-value" id="stat-product">0</div><div class="stat-label">→ Produits</div></div>
                 <div class="stat-box stat-skip"><div class="stat-value" id="stat-skip">0</div><div class="stat-label">→ Ignorées</div></div>
@@ -491,6 +505,9 @@ body::before {
                 <button class="filter-pill pill-cms" data-filter="cms" onclick="setFilter('cms', this)">📄 CMS</button>
                 <button class="filter-pill pill-product" data-filter="product" onclick="setFilter('product', this)">🏷️ Produits</button>
                 <button class="filter-pill pill-skip" data-filter="skip" onclick="setFilter('skip', this)">⏭️ Ignorées</button>
+                <span style="border-left:1px solid var(--border); height:20px; margin:0 4px"></span>
+                <button class="filter-pill" data-filter="type-page" onclick="setFilter('type-page', this)">📃 Pages</button>
+                <button class="filter-pill" data-filter="type-post" onclick="setFilter('type-post', this)">📝 Articles</button>
                 <span style="flex:1"></span>
                 <button class="btn btn-sm btn-secondary" onclick="bulkAction('cms')">📄 Sélection → CMS</button>
                 <button class="btn btn-sm btn-secondary" onclick="bulkAction('product')">🏷️ Sélection → Produit</button>
@@ -506,6 +523,7 @@ body::before {
                             <th class="col-target">Destination</th>
                             <th class="col-slug">Slug</th>
                             <th class="col-title">Titre</th>
+                            <th class="col-size" style="width:55px">Type</th>
                             <th class="col-size">Taille</th>
                             <th class="col-img">Img</th>
                             <th class="col-seo">SEO</th>
@@ -518,7 +536,7 @@ body::before {
 
         <div id="scan-empty" class="empty-state">
             <div class="icon">🌐</div>
-            <p>Entrez l'URL WordPress et cliquez sur <strong>Scanner</strong> pour voir toutes les pages disponibles.</p>
+            <p>Entrez l'URL WordPress et cliquez sur <strong>Scanner</strong> pour voir toutes les pages et articles disponibles.</p>
         </div>
     </div>
 
@@ -715,8 +733,12 @@ function updateStats() {
     const cms = pages.filter(p => p.target === 'cms').length;
     const product = pages.filter(p => p.target === 'product').length;
     const skip = pages.filter(p => p.target === 'skip').length;
+    const pageCount = pages.filter(p => p.wp_type === 'page').length;
+    const postCount = pages.filter(p => p.wp_type === 'post').length;
 
     document.getElementById('stat-total').textContent = pages.length;
+    document.getElementById('stat-pages').textContent = pageCount;
+    document.getElementById('stat-posts').textContent = postCount;
     document.getElementById('stat-cms').textContent = cms;
     document.getElementById('stat-product').textContent = product;
     document.getElementById('stat-skip').textContent = skip;
@@ -727,13 +749,19 @@ function renderPages() {
     const search = document.getElementById('search-pages').value.toLowerCase();
 
     const filtered = pages.filter(p => {
-        if (currentFilter !== 'all' && p.target !== currentFilter) return false;
+        if (currentFilter === 'type-page' && p.wp_type !== 'page') return false;
+        if (currentFilter === 'type-post' && p.wp_type !== 'post') return false;
+        if (['cms','product','skip'].includes(currentFilter) && p.target !== currentFilter) return false;
         if (search && !p.slug.includes(search) && !p.title.toLowerCase().includes(search)) return false;
         return true;
     });
 
     tbody.innerHTML = filtered.map((p, i) => {
         const selectClass = 'target-select target-' + p.target;
+        const typeBadge = p.wp_type === 'post'
+            ? '<span class="type-badge type-post">Article</span>'
+            : '<span class="type-badge type-page">Page</span>';
+        const cats = (p.category_names || []).map(c => `<span class="category-tag">${escHtml(c)}</span>`).join('');
         return `<tr onclick="showDetail('${p.slug}')" data-slug="${p.slug}">
             <td class="col-check" onclick="event.stopPropagation()">
                 <input type="checkbox" class="custom-check page-check" data-slug="${p.slug}" />
@@ -747,7 +775,8 @@ function renderPages() {
                 </select>
             </td>
             <td class="col-slug"><span class="slug-text">${p.slug}</span></td>
-            <td class="col-title">${escHtml(p.title)}</td>
+            <td class="col-title">${escHtml(p.title)}${cats}</td>
+            <td class="col-size">${typeBadge}</td>
             <td class="col-size">${p.content_size}</td>
             <td class="col-img">${p.image_count}</td>
             <td class="col-seo">${p.has_seo ? '✅' : '❌'}</td>
@@ -809,8 +838,10 @@ function showDetail(slug) {
     document.getElementById('detail-title').textContent = p.title;
     document.getElementById('detail-meta').innerHTML = `
         <dt>Slug</dt><dd><code>${p.slug}</code></dd>
+        <dt>Type</dt><dd>${p.wp_type === 'post' ? '📝 Article' : '📃 Page'}</dd>
         <dt>Destination</dt><dd>${targetLabel(p.target)}</dd>
         <dt>WP ID</dt><dd>${p.wp_id}</dd>
+        ${(p.category_names || []).length ? '<dt>Catégories</dt><dd>' + p.category_names.join(', ') + '</dd>' : ''}
         <dt>Taille</dt><dd>${p.content_size}</dd>
         <dt>Images</dt><dd>${p.image_count}</dd>
         <dt>SEO</dt><dd>${p.has_seo ? '✅ Oui' : '❌ Non'}</dd>
