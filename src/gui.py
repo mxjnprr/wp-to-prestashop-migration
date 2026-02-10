@@ -503,10 +503,12 @@ class GUIHandler(BaseHTTPRequestHandler):
                         wp_categories.get(c, "?") for c in item.get("wp_categories", [])
                     ]
 
-                # Auto-categorize
+                # Default: everything set to "skip" — user assigns explicitly
+                # or uses the 🤖 Auto button to auto-categorize
                 STATE.assignments = {}
+                STATE.page_options = {}
                 for p in STATE.analyzed:
-                    STATE.assignments[p["slug"]] = auto_categorize(p, wp_categories)
+                    STATE.assignments[p["slug"]] = "skip"
 
                 page_count = sum(1 for p in STATE.analyzed if p.get("wp_type") == "page")
                 post_count = sum(1 for p in STATE.analyzed if p.get("wp_type") == "post")

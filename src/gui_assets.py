@@ -857,6 +857,7 @@ async function changeTarget(slug, target, selectEl) {
     if (p) p.target = target;
     selectEl.className = 'target-select target-' + target;
     updateStats();
+    toast(`${slug} → ${targetLabel(target)}`, 'success');
 }
 
 function filterPages() { renderPages(); }
@@ -955,7 +956,7 @@ async function confirmBulkModal() {
 async function autoCateg() {
     const result = await api('POST', '/api/pages/auto-categorize');
     await loadPages();
-    toast('Auto-catégorisation appliquée', 'info');
+    toast(`🤖 Auto: ${result.cms || 0} CMS, ${result.product || 0} Produits, ${result.skip || 0} Ignorées`, 'success');
 }
 
 // ── Detail panel ─────────────────────────────────────────────
