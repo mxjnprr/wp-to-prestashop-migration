@@ -472,24 +472,21 @@ class PrestaShopClient:
             if isinstance(pages, dict):
                 pages = [pages]
 
-            # Group pages by category
-            cat_pages: dict[int, list[str]] = {}
+            # Group pages by category — count only, page titles ≠ category names
+            cat_counts: dict[int, int] = {}
             for p in pages:
                 cat_id = int(p.get("id_cms_category", 1))
-                # Extract first language title
-                title = p.get("meta_title", "")
-                if isinstance(title, list) and title:
-                    title = title[0].get("value", "") if isinstance(title[0], dict) else str(title[0])
-                elif isinstance(title, dict):
-                    title = title.get("value", str(title))
-                cat_pages.setdefault(cat_id, []).append(str(title))
+                cat_counts[cat_id] = cat_counts.get(cat_id, 0) + 1
 
-            # Build result: category ID + count of pages as description
+            # Build result: category IDs with page counts
+            # Actual names must come from config overrides (PS API doesn't expose them)
             result = []
-            for cat_id in sorted(cat_pages.keys()):
-                titles = cat_pages[cat_id]
-                name = f"{titles[0][:40]}… ({len(titles)} pages)" if len(titles) > 1 else titles[0][:50]
-                result.append({"id": cat_id, "name": name})
+            for cat_id in sorted(cat_counts.keys()):
+                count = cat_counts[cat_id]
+                result.append({
+                    "id": cat_id,
+                    "name": f"Catégorie {cat_id} ({count} pages)",
+                })
 
             # Always include category 1 even if no pages
             if not any(c["id"] == 1 for c in result):
