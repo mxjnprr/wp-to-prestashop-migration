@@ -513,10 +513,11 @@ class GUIHandler(BaseHTTPRequestHandler):
                 "running": STATE.migration_running,
             })
         elif path == "/api/ps/cms-categories":
-            # Auto-detect CMS categories from PrestaShop, with config name overrides
-            ps_url = STATE.config.get("prestashop", {}).get("url", "")
-            ps_key = STATE.config.get("prestashop", {}).get("api_key", "")
-            name_overrides = STATE.config.get("prestashop", {}).get("cms_categories", {})
+            # Auto-detect CMS categories from PrestaShop
+            ps_cfg = STATE.config.get("prestashop", {})
+            mig_cfg = STATE.config.get("migration", {})
+            ps_url = ps_cfg.get("url", "")
+            ps_key = ps_cfg.get("api_key", "")
 
             cats = []
             if ps_url and ps_key:
@@ -526,23 +527,18 @@ class GUIHandler(BaseHTTPRequestHandler):
                         api_base=ps_url.rstrip("/") + "/api",
                         api_key=ps_key,
                     )
-                    cats = ps.list_cms_categories()
-                    # Apply user-defined name overrides from config
-                    if name_overrides and isinstance(name_overrides, dict):
-                        for cat in cats:
-                            override = name_overrides.get(cat["id"], name_overrides.get(str(cat["id"])))
-                            if override:
-                                cat["name"] = str(override)
+                    cats = ps.list_cms_categories(
+                        ftp_host=mig_cfg.get("ftp_host", ""),
+                        ftp_user=mig_cfg.get("ftp_user", ""),
+                        ftp_password=mig_cfg.get("ftp_password", ""),
+                        ftp_remote_root=mig_cfg.get("ftp_remote_path", ""),
+                        ps_base_url=ps_url,
+                    )
                 except Exception as e:
-                    cats = [{"id": 1, "name": "Accueil (erreur PS)"}]
+                    cats = [{"id": 1, "name": f"Erreur: {e}"}]
 
             if not cats:
-                # Fallback to config-only
-                if name_overrides and isinstance(name_overrides, dict):
-                    cats = [{"id": int(k), "name": v} for k, v in name_overrides.items()]
-                    cats.sort(key=lambda c: c["id"])
-                else:
-                    cats = [{"id": 1, "name": "Accueil"}]
+                cats = [{"id": 1, "name": "Accueil"}]
 
             self._send_json({"categories": cats})
         else:

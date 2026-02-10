@@ -450,11 +450,156 @@ class PrestaShopClient:
             logger.error(f"PS: failed to list products: {e}")
             return []
 
-    def list_cms_categories(self) -> list[dict]:
+    def list_cms_categories(
+        self,
+        ftp_host: str = "",
+        ftp_user: str = "",
+        ftp_password: str = "",
+        ftp_remote_root: str = "",
+        ps_base_url: str = "",
+    ) -> list[dict]:
         """
-        Auto-detect CMS categories from PrestaShop in a single API call.
-        Fetches all CMS pages with display=full, extracts unique id_cms_category values.
+        Auto-detect CMS categories with names from PrestaShop.
+
+        Strategy:
+        1. Upload a tiny PHP helper via FTP that reads category names from PS DB
+        2. Call it via HTTP to get JSON: [{id, name}, ...]
+        3. Delete the helper file
+        4. Fall back to webservice ID-only detection if FTP unavailable
         """
+        # ── Strategy 1: PHP helper via FTP ──────────────────────────
+        if ftp_host and ftp_user and ps_base_url:
+            result = self._fetch_cats_via_php(
+                ftp_host, ftp_user, ftp_password, ftp_remote_root, ps_base_url
+            )
+            if result:
+                return result
+
+        # ── Strategy 2: Webservice API (IDs only, no names) ─────────
+        return self._fetch_cats_via_api()
+
+    def _fetch_cats_via_php(
+        self,
+        ftp_host: str,
+        ftp_user: str,
+        ftp_password: str,
+        ftp_remote_root: str,
+        ps_base_url: str,
+    ) -> list[dict]:
+        """Upload temp PHP, fetch category names from DB, clean up."""
+        import ftplib
+        import io
+        import time
+        import random
+
+        # PHP script that uses PrestaShop's own DB connection
+        helper_name = f"_cms_cats_{random.randint(10000,99999)}.php"
+        php_code = """<?php
+@ini_set('display_errors', 0);
+header('Content-Type: application/json; charset=utf-8');
+header('Access-Control-Allow-Origin: *');
+// Load PrestaShop config for DB access
+$cfg_paths = [
+    dirname(__FILE__).'/config/config.inc.php',
+    dirname(__FILE__).'/../config/config.inc.php',
+];
+$loaded = false;
+foreach ($cfg_paths as $p) {
+    if (file_exists($p)) { include($p); $loaded = true; break; }
+}
+if (!$loaded || !class_exists('Db')) {
+    echo json_encode(['error' => 'PS config not found']);
+    exit;
+}
+try {
+    $sql = 'SELECT c.id_cms_category, cl.name, cl.id_lang
+            FROM '._DB_PREFIX_.'cms_category c
+            JOIN '._DB_PREFIX_.'cms_category_lang cl
+              ON c.id_cms_category = cl.id_cms_category
+            WHERE c.active = 1
+            ORDER BY c.id_cms_category ASC';
+    $rows = Db::getInstance()->executeS($sql);
+    // Group by category, prefer lang 1
+    $cats = [];
+    foreach ($rows as $r) {
+        $id = (int)$r['id_cms_category'];
+        if (!isset($cats[$id]) || (int)$r['id_lang'] === 1) {
+            $cats[$id] = $r['name'];
+        }
+    }
+    $result = [];
+    foreach ($cats as $id => $name) {
+        $result[] = ['id' => $id, 'name' => $name];
+    }
+    echo json_encode($result);
+} catch (Exception $e) {
+    echo json_encode(['error' => $e->getMessage()]);
+}
+@unlink(__FILE__);
+"""
+        # Derive PS web root from FTP remote path
+        # ftp_remote_path is like /shop.airmkg.eu/img/cms
+        # PS root is /shop.airmkg.eu/
+        parts = ftp_remote_root.strip("/").split("/")
+        ps_ftp_root = "/" + parts[0] + "/" if parts else "/"
+
+        ftp = None
+        try:
+            # Connect FTP
+            try:
+                ftp = ftplib.FTP_TLS(ftp_host)
+                ftp.login(ftp_user, ftp_password)
+                ftp.prot_p()
+            except Exception:
+                ftp = ftplib.FTP(ftp_host)
+                ftp.login(ftp_user, ftp_password)
+
+            # Upload PHP helper to PS root
+            ftp.cwd(ps_ftp_root)
+            ftp.storbinary(f"STOR {helper_name}", io.BytesIO(php_code.encode("utf-8")))
+            logger.info(f"PS: uploaded helper {helper_name} to {ps_ftp_root}")
+
+            # Call it via HTTP
+            time.sleep(0.5)
+            helper_url = f"{ps_base_url.rstrip('/')}/{helper_name}"
+            resp = self.session.get(helper_url, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Clean up via FTP (PHP also self-deletes, but belt-and-suspenders)
+            try:
+                ftp.delete(helper_name)
+            except Exception:
+                pass
+
+            if isinstance(data, dict) and "error" in data:
+                logger.warning(f"PS: PHP helper error: {data['error']}")
+                return []
+
+            if isinstance(data, list):
+                result = [{"id": int(c["id"]), "name": str(c["name"])} for c in data if "id" in c]
+                logger.info(f"PS: fetched {len(result)} CMS category names via PHP helper")
+                return result
+
+            return []
+        except Exception as e:
+            logger.warning(f"PS: PHP helper approach failed: {e}")
+            # Clean up on failure
+            if ftp:
+                try:
+                    ftp.delete(helper_name)
+                except Exception:
+                    pass
+            return []
+        finally:
+            if ftp:
+                try:
+                    ftp.quit()
+                except Exception:
+                    pass
+
+    def _fetch_cats_via_api(self) -> list[dict]:
+        """Fallback: discover category IDs only (no names) from webservice."""
         url = f"{self.api_base}/content_management_system"
         try:
             resp = self.session.get(
@@ -472,29 +617,22 @@ class PrestaShopClient:
             if isinstance(pages, dict):
                 pages = [pages]
 
-            # Group pages by category — count only, page titles ≠ category names
             cat_counts: dict[int, int] = {}
             for p in pages:
                 cat_id = int(p.get("id_cms_category", 1))
                 cat_counts[cat_id] = cat_counts.get(cat_id, 0) + 1
 
-            # Build result: category IDs with page counts
-            # Actual names must come from config overrides (PS API doesn't expose them)
             result = []
             for cat_id in sorted(cat_counts.keys()):
                 count = cat_counts[cat_id]
-                result.append({
-                    "id": cat_id,
-                    "name": f"Catégorie {cat_id} ({count} pages)",
-                })
+                result.append({"id": cat_id, "name": f"Catégorie {cat_id} ({count} pages)"})
 
-            # Always include category 1 even if no pages
             if not any(c["id"] == 1 for c in result):
                 result.insert(0, {"id": 1, "name": "Accueil"})
 
-            logger.info(f"PS: auto-detected {len(result)} CMS categories")
+            logger.info(f"PS: API fallback - {len(result)} CMS categories (IDs only)")
             return result
         except Exception as e:
-            logger.error(f"PS: failed to auto-detect CMS categories: {e}")
+            logger.error(f"PS: failed to detect CMS categories: {e}")
             return [{"id": 1, "name": "Accueil (défaut)"}]
 
