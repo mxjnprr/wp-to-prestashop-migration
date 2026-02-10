@@ -94,23 +94,37 @@ class PrestaShopClient:
             return None
 
     @staticmethod
-    def _sanitize_meta(text: str, max_len: int = 512) -> str:
-        """Sanitize meta fields for PrestaShop: strip HTML, decode entities, limit length."""
+    def _sanitize_meta(text: str, max_len: int = 255) -> str:
+        """Sanitize meta fields for PrestaShop's isCleanHtml validation."""
         import html
         import re
         if not text:
             return ""
-        # Strip HTML tags
-        text = re.sub(r'<[^>]+>', '', text)
-        # Decode HTML entities (&#8230; → …, &rsquo; → ', etc.)
-        text = html.unescape(text)
-        # Remove control characters except newlines
-        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+        # Strip HTML tags (including CDATA, comments, etc.)
+        text = re.sub(r'<[^>]*>', '', text)
+        # Decode ALL HTML entities (&#8230; → …, &rsquo; → ', etc.)
+        # Run twice to handle double-encoded entities
+        text = html.unescape(html.unescape(text))
+        # Replace smart/Unicode punctuation with ASCII equivalents
+        replacements = {
+            '\u2018': "'", '\u2019': "'",  # smart single quotes
+            '\u201C': '"', '\u201D': '"',  # smart double quotes
+            '\u2026': '...', '\u2013': '-', '\u2014': '-',  # ellipsis, dashes
+            '\u00AB': '"', '\u00BB': '"',  # guillemets
+            '\u2032': "'", '\u2033': '"',  # prime marks
+            '\u00A0': ' ',  # non-breaking space
+        }
+        for orig, repl in replacements.items():
+            text = text.replace(orig, repl)
+        # Remove chars that PS isCleanHtml rejects: < > = { }
+        text = re.sub(r'[<>={}]', '', text)
+        # Remove control characters
+        text = re.sub(r'[\x00-\x1f\x7f]', '', text)
         # Collapse whitespace
         text = re.sub(r'\s+', ' ', text).strip()
-        # Truncate
+        # Truncate (use ASCII ellipsis to stay safe)
         if len(text) > max_len:
-            text = text[:max_len - 1] + "…"
+            text = text[:max_len - 3] + "..."
         return text
 
     def _build_cms_xml(
